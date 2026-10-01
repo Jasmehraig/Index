@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+  <title>Index — Anime Channels</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">▶</span>
+        <span class="brand-name">Index</span>
+      </div>
+      <button id="channelsBtn" class="icon-btn" aria-label="Channels">▦</button>
+    </header>
+
+    <div class="search-wrap">
+      <div class="search">
+        <span class="search-icon">⌕</span>
+        <input id="searchInput" type="search" placeholder="Search anime…" autocomplete="off" />
+        <button id="clearBtn" class="clear-btn" hidden>✕</button>
+      </div>
+    </div>
+
+    <nav id="genreBar" class="chips"></nav>
+
+    <main>
+      <section id="hero" class="hero" hidden></section>
+      <section id="grid" class="grid"></section>
+      <div id="empty" class="empty" hidden>
+        <div class="empty-art">🍿</div>
+        <h2>Nothing indexed yet</h2>
+        <p>Add the bot to an anime channel as an admin and its posts will show up here automatically.</p>
+      </div>
+      <div id="loader" class="loader"><span></span></div>
+    </main>
+  </div>
+
+  <div id="detail" class="detail" hidden></div>
+  <div id="sheet" class="sheet" hidden></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
