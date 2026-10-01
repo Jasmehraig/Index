@@ -1,0 +1,17 @@
+services:
+  index:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Persist SQLite on the named volume regardless of .env's DATABASE_URL.
+      DATABASE_URL: sqlite:////app/data/index.db
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+    volumes:
+      - index-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  index-data:

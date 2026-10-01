@@ -1,0 +1,22 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Free tier: web service + persistent disk is not free, so SQLite resets on
+# redeploy unless you add a paid disk or switch DATABASE_URL to a free Postgres.
+services:
+  - type: web
+    name: index-miniapp
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        value: sqlite:///./data/index.db
+      - key: PYTHON_VERSION
+        value: 3.12.6
