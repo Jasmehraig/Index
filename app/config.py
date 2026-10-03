@@ -12,7 +12,7 @@ class Settings(BaseSettings):
         env_file=str(BASE_DIR / ".env"), env_file_encoding="utf-8", extra="ignore"
     )
 
-    bot_token: str = "8639089032:AAEBBmRGnwGaag4bvbjHV9jF5wzriSw-UhY"
+    bot_token: str = "8639089032:AAGiFCtR_zgC5dDxswvYWvOcc23a2r0UNIc"
     public_base_url: str = "http://localhost:8000"
     webhook_secret: str = ""
     DATABASE_URL= "postgresql://neondb_owner:npg_D6EWrOTeM8wh@ep-mute-recipe-b4o6rgos-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require"
