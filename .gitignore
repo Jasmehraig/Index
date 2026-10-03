@@ -8,3 +8,6 @@ data/
 *.sqlite3
 .pytest_cache/
 .DS_Store
+
+# Served build artifact (source snapshot for download)
+app/static/Index-src.zip
