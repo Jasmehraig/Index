@@ -49,6 +49,13 @@ class TelegramClient:
         menu_button = {"type": "web_app", "text": "Open Index", "web_app": {"url": url}} if url else {"type": "default"}
         return await self._call("setChatMenuButton", chat_id=chat_id, menu_button=menu_button)
 
+    async def set_my_commands(self, commands: list[dict]) -> None:
+        """Publish the slash-command menu shown in Telegram clients."""
+        try:
+            await self._call("setMyCommands", commands=commands)
+        except TelegramError as exc:
+            log.warning("Could not set bot commands: %s", exc)
+
     async def send_message(self, chat_id, text, reply_markup=None, parse_mode="HTML", disable_web_page_preview=False):
         return await self._call(
             "sendMessage",

@@ -29,6 +29,22 @@ async def poll_all_channels() -> None:
         db.close()
 
 
+async def refresh_catalog() -> None:
+    """Re-read every configured index channel so the catalog tracks them."""
+    settings = get_settings()
+    if not settings.index_channel_usernames:
+        return
+    from . import catalog
+
+    db = session_scope()
+    try:
+        await catalog.refresh_all(db)
+    except Exception as exc:  # noqa: BLE001 - keep the scheduler alive
+        log.warning("Catalog refresh failed: %s", exc)
+    finally:
+        db.close()
+
+
 def start_scheduler() -> AsyncIOScheduler | None:
     global _scheduler
     settings = get_settings()
@@ -40,6 +56,14 @@ def start_scheduler() -> AsyncIOScheduler | None:
         "interval",
         minutes=settings.poll_interval_minutes,
         id="poll_channels",
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        refresh_catalog,
+        "interval",
+        minutes=max(settings.poll_interval_minutes, 30),
+        id="refresh_catalog",
         max_instances=1,
         coalesce=True,
     )

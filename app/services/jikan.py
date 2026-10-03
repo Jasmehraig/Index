@@ -107,7 +107,7 @@ def normalize(item: dict) -> dict:
     }
 
 
-async def search_anime(title: str, limit: int = 1, _attempts: int = 4) -> dict | None:
+async def search_anime(title: str, limit: int = 1, _attempts: int = 2) -> dict | None:
     """Search Jikan for the best matching anime. Returns a normalized dict or None."""
     query = clean_title(title)
     if not query:
@@ -121,7 +121,7 @@ async def search_anime(title: str, limit: int = 1, _attempts: int = 4) -> dict |
             await asyncio.sleep(wait)
         try:
             async with httpx.AsyncClient(
-                timeout=20.0,
+                timeout=8.0,
                 headers={"Accept": "application/json", "Connection": "close"},
             ) as client:
                 resp = await client.get(
