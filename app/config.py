@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     bot_token: str = "8639089032:AAEBBmRGnwGaag4bvbjHV9jF5wzriSw-UhY"
     public_base_url: str = "http://localhost:8000"
     webhook_secret: str = ""
-    DATABASE_URL= "postgresql://neondb_owner:...@ep-mute-recipe-b4o6rgos-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require"
+    DATABASE_URL= "postgresql://neondb_owner:npg_D6EWrOTeM8wh@ep-mute-recipe-b4o6rgos-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require"
     poll_interval_minutes: int = 15
     jikan_base_url: str = "https://api.jikan.moe/v4"
     anilist_url: str = "https://graphql.anilist.co"
