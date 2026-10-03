@@ -12,10 +12,10 @@ class Settings(BaseSettings):
         env_file=str(BASE_DIR / ".env"), env_file_encoding="utf-8", extra="ignore"
     )
 
-    bot_token: str = ""
+    bot_token: str = "8639089032:AAEBBmRGnwGaag4bvbjHV9jF5wzriSw-UhY"
     public_base_url: str = "http://localhost:8000"
     webhook_secret: str = ""
-    database_url: str = f"sqlite:///{BASE_DIR / 'data' / 'index.db'}"
+    DATABASE_URL= "postgresql://neondb_owner:...@ep-mute-recipe-b4o6rgos-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require"
     poll_interval_minutes: int = 15
     jikan_base_url: str = "https://api.jikan.moe/v4"
     anilist_url: str = "https://graphql.anilist.co"
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # Channels whose posts are curated "name + link" lists rather than release
     # feeds. Comma-separated chat ids or @usernames. The catalog is seeded from
     # these channels' public web previews.
-    index_channels: str = ""
+    index_channels: str = "https://t.me/Anime_Index_swordsmith"
     # File-share bot username used to resolve file links, if any.
     file_share_bot: str = ""
 
