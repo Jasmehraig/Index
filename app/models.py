@@ -112,6 +112,93 @@ class Post(Base):
         return self.url or self.telegram_link
 
 
+class AnimeEntry(Base):
+    """One anime in the curated catalog, sourced from an index channel.
+
+    This is the canonical "what the Mini App shows" row. It is seeded from the
+    name + link pairs an index channel publishes, then enriched with AniList
+    metadata. ``channel_link`` is the destination users tap to reach the anime;
+    it may be a public channel, a private invite, or a file-share bot deep link.
+    """
+
+    __tablename__ = "anime_entries"
+    __table_args__ = (
+        UniqueConstraint("source_chat", "entry_index", name="uq_entry_source"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    anime_id: Mapped[int | None] = mapped_column(ForeignKey("anime.id"), nullable=True)
+    # Where the row came from, e.g. "Anime_Index_swordsmith" and its ordinal.
+    source_chat: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    entry_index: Mapped[int] = mapped_column(Integer, default=0)
+    raw_name: Mapped[str] = mapped_column(String(512), index=True)
+    # Loose comparison key so the same anime from two index channels merges.
+    match_key: Mapped[str | None] = mapped_column(String(256), index=True)
+    channel_link: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    channel_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    anime: Mapped["Anime | None"] = relationship()
+    channels: Mapped[list["EntryChannel"]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan"
+    )
+    qualities: Mapped[list["QualityLink"]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan"
+    )
+
+
+class EntryChannel(Base):
+    """One index channel that lists an anime, and the link it points at.
+
+    An anime can appear in several index channels (yours and a friend's), so the
+    links live here rather than on the entry: the detail view offers one button
+    per channel instead of a single destination.
+    """
+
+    __tablename__ = "entry_channels"
+    __table_args__ = (
+        UniqueConstraint("entry_id", "source_chat", name="uq_entry_channel"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("anime_entries.id", ondelete="CASCADE"), index=True
+    )
+    source_chat: Mapped[str] = mapped_column(String(128), index=True)
+    url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    entry: Mapped["AnimeEntry"] = relationship(back_populates="channels")
+
+
+class QualityLink(Base):
+    """A quality-specific download link for a catalog entry.
+
+    ``url`` is either a direct link or, when ``via_bot`` is set, a file-share
+    bot deep link that resolves to one or many files.
+    """
+
+    __tablename__ = "quality_links"
+    __table_args__ = (
+        UniqueConstraint("entry_id", "quality", "url", name="uq_quality_link"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("anime_entries.id", ondelete="CASCADE"), index=True
+    )
+    quality: Mapped[str] = mapped_column(String(32))
+    url: Mapped[str] = mapped_column(String(1024))
+    label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    via_bot: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    batch: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    entry: Mapped["AnimeEntry"] = relationship(back_populates="qualities")
+
+
 _engine = None
 _SessionLocal = None
 
@@ -126,6 +213,17 @@ def init_db(database_url: str | None = None):
 
             Path(path).parent.mkdir(parents=True, exist_ok=True)
     _engine = create_engine(url, future=True)
+    if url.startswith("sqlite"):
+        from sqlalchemy import event
+
+        @event.listens_for(_engine, "connect")
+        def _sqlite_pragmas(dbapi_conn, _record):
+            # WAL lets the scheduler read while an enrichment pass writes.
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=10000")
+            cursor.close()
+
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     Base.metadata.create_all(_engine)
     _migrate(_engine)
@@ -146,6 +244,7 @@ def _migrate(engine) -> None:
             "url": "VARCHAR(1024)",
             "entry_index": "INTEGER DEFAULT 0",
         },
+        "anime_entries": {"match_key": "VARCHAR(256)"},
     }
     from sqlalchemy import inspect, text
 

@@ -32,12 +32,20 @@ class Settings(BaseSettings):
     # Optional channel where the bot announces newly indexed anime.
     announce_chat_id: int | None = None
     # Channels whose posts are curated "name + link" lists rather than release
-    # feeds. Comma-separated chat ids or @usernames.
+    # feeds. Comma-separated chat ids or @usernames. The catalog is seeded from
+    # these channels' public web previews.
     index_channels: str = ""
+    # File-share bot username used to resolve file links, if any.
+    file_share_bot: str = ""
 
     @property
     def index_channel_refs(self) -> set[str]:
         return {part.strip().lower() for part in self.index_channels.split(",") if part.strip()}
+
+    @property
+    def index_channel_usernames(self) -> list[str]:
+        """Public channel usernames we can read via t.me/s."""
+        return sorted({r.lstrip("@") for r in self.index_channel_refs if not r.lstrip("-").isdigit()})
 
     @field_validator("announce_chat_id", mode="before")
     @classmethod

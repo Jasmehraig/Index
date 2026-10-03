@@ -37,6 +37,16 @@ async def lifespan(app: FastAPI):
                 log.info("Webhook set to %s", settings.webhook_url)
             else:
                 log.warning("PUBLIC_BASE_URL is not HTTPS; skipping webhook registration")
+            await tg.set_my_commands(
+                [
+                    {"command": "start", "description": "Open the anime index"},
+                    {"command": "catalog", "description": "Build catalog from an index channel"},
+                    {"command": "channels", "description": "List indexed channels"},
+                    {"command": "quality", "description": "Add a download link to a title"},
+                    {"command": "refresh", "description": "Re-scan channel feeds"},
+                    {"command": "help", "description": "How Index works"},
+                ]
+            )
         except Exception as exc:  # noqa: BLE001 - app should still serve the mini app
             log.warning("Telegram setup failed: %s", exc)
     else:
