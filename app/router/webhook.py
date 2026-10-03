@@ -119,9 +119,39 @@ async def _index_channel_post(db: Session, message: dict, channel: Channel) -> l
         "published_at": None,
     }
     posts = await ingest_entries(db, channel, [entry])
+    await _attach_channel_file(db, message, channel, message_id)
     if posts:
         db.refresh(channel)
     return posts
+
+
+async def _attach_channel_file(
+    db: Session, message: dict, channel: Channel, message_id: int
+) -> None:
+    """Record a database-channel file against the anime its name matches."""
+    from ..services import catalog
+
+    media = message.get("document") or message.get("video") or message.get("audio") or {}
+    filename = media.get("file_name")
+    if not filename:
+        return
+    url = _message_link(channel, message_id)
+    try:
+        link = await catalog.attach_file(db, filename, url)
+    except Exception as exc:  # noqa: BLE001 - matching is best effort
+        log.warning("File attach failed for %r: %s", filename, exc)
+        return
+    if link is not None:
+        log.info("Attached file %r to %s (%s)", filename, link.entry.raw_name, link.quality)
+
+
+def _message_link(channel: Channel, message_id: int) -> str:
+    """A tappable link to a specific message in a channel."""
+    if channel.username:
+        return f"https://t.me/{channel.username}/{message_id}"
+    if channel.invite_link:
+        return f"{channel.invite_link.rstrip('/')}/{message_id}"
+    return f"https://t.me/c/{str(channel.chat_id).lstrip('-100')}/{message_id}"
 
 
 @router.post("/telegram/webhook")
@@ -215,6 +245,104 @@ async def _handle_message(message: dict) -> None:
         await _send_set_kind(chat_id, text, message.get("from", {}).get("id"), "feed")
     elif command == "/import":
         await _send_import(chat_id, text, message.get("from", {}).get("id"))
+    elif command in ("/catalog", "/indexchannelimport"):
+        await _send_catalog_import(chat_id, text)
+    elif command == "/quality":
+        await _send_quality(chat_id, text, message.get("from", {}).get("id"))
+
+
+async def _send_catalog_import(chat_id: int, text: str) -> None:
+    """Read a public index channel and rebuild the catalog from its posts."""
+    from ..services import catalog as catalog_service
+
+    parts = text.split(maxsplit=1)
+    ref = parts[1].strip() if len(parts) > 1 else ""
+    settings = get_settings()
+    if not ref:
+        refs = settings.index_channel_usernames
+        if not refs:
+            await _notify(
+                chat_id,
+                "Usage: <code>/catalog @IndexChannel</code>\n\n"
+                "I read that channel's public preview, take every anime name and "
+                "link it lists, and build the catalog the mini app shows. "
+                "Set <code>INDEX_CHANNELS</code> to make it automatic.",
+            )
+            return
+        ref = refs[0]
+
+    ref = ref.lstrip("@").replace("https://t.me/", "").strip("/")
+    if ref.startswith("+"):
+        await _notify(
+            chat_id,
+            "⚠️ I can only read <b>public</b> channels by username. "
+            "Send a public index channel like <code>/catalog @MyIndex</code>.",
+        )
+        return
+
+    await _notify(chat_id, f"⏳ Reading @{ref}…")
+    db = session_scope()
+    try:
+        catalog_service.backfill_match_keys(db)
+        result = await catalog_service.import_from_channel(db, ref)
+        collapsed = catalog_service.collapse_duplicates(db)
+    except Exception as exc:  # noqa: BLE001 - surface any scrape failure to the user
+        log.warning("Catalog import failed for %s: %s", ref, exc)
+        await _notify(chat_id, f"❌ Could not read @{ref}. Is it public?")
+        return
+    finally:
+        db.close()
+
+    merged_line = ""
+    if result.get("merged") or collapsed.get("merged"):
+        merged_line = (
+            f"• 🔀 {result.get('merged', 0) + collapsed.get('merged', 0)} duplicate(s) "
+            "merged into existing entries\n"
+        )
+    await _notify(
+        chat_id,
+        f"✅ Catalog updated from <b>@{ref}</b>\n"
+        f"• {result['created']} new, {result['updated']} refreshed "
+        f"({result['total']} listed)\n"
+        f"• {result.get('details', 0)} detail card(s) merged\n"
+        f"{merged_line}\n"
+        "Open the mini app to browse it.",
+        reply_markup=_mini_app_keyboard(),
+    )
+
+
+async def _send_quality(chat_id: int, text: str, user_id: int | None) -> None:
+    """Attach a manual download link to a catalog entry: /quality <id> <quality> <url>."""
+    from ..models import AnimeEntry
+    from ..services.catalog import add_manual_quality
+
+    parts = text.split()
+    if len(parts) < 4 or not parts[1].isdigit():
+        await _notify(
+            chat_id,
+            "Usage: <code>/quality &lt;entry id&gt; &lt;quality&gt; &lt;link&gt;</code>\n"
+            "Example: <code>/quality 12 1080p https://t.me/YourBot?start=abc</code>\n\n"
+            "Entry ids are shown when you open a title in the mini app.",
+        )
+        return
+    entry_id, quality, url = int(parts[1]), parts[2], parts[3]
+
+    db = session_scope()
+    try:
+        if not _is_admin(db, user_id):
+            await _notify(chat_id, "🔒 Only owners and admins can add links.")
+            return
+        entry = db.get(AnimeEntry, entry_id)
+        if entry is None:
+            await _notify(chat_id, f"No catalog entry with id <b>{entry_id}</b>.")
+            return
+        await add_manual_quality(db, entry, quality, url)
+        await _notify(
+            chat_id,
+            f"✅ Added <b>{quality}</b> link to <b>{entry.raw_name}</b>.",
+        )
+    finally:
+        db.close()
 
 
 async def _send_start(chat_id: int) -> None:
@@ -245,7 +373,9 @@ async def _send_help(chat_id: int) -> None:
         "/rss &lt;url&gt; – set a custom feed for your channel\n"
         "/indexchannel – treat your channel as a name+link index\n"
         "/feed – treat your channel as a release feed\n"
-        "/import – paste a name+link list to index it manually"
+        "/import – paste a name+link list to index it manually\n"
+        "/catalog &lt;@channel&gt; – build the catalog from an index channel\n"
+        "/quality &lt;id&gt; &lt;quality&gt; &lt;link&gt; – add a download link"
     )
     await _notify(chat_id, text, reply_markup=_mini_app_keyboard())
 

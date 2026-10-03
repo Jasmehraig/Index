@@ -6,11 +6,61 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
-from ..models import Anime, Channel, Post, get_session, session_scope
+from ..models import (
+    Anime,
+    AnimeEntry,
+    Channel,
+    EntryChannel,
+    Post,
+    QualityLink,
+    get_session,
+    session_scope,
+)
+from ..services.catalog import display_title
 from ..services.ingest import ingest_channel
 from ..services.webapp_auth import validate_init_data
 
 router = APIRouter(prefix="/api", tags=["api"])
+
+
+def _entry_card(entry: AnimeEntry) -> dict:
+    """A catalog row: metadata plus the channels users tap to reach the files."""
+    anime = entry.anime
+    links = entry.channels or []
+    primary = links[0] if links else None
+    return {
+        "id": entry.id,
+        "raw_name": entry.raw_name,
+        # English-only: title_english when AniList has one, else the romaji title.
+        "title": display_title(entry),
+        "title_english": anime.title_english if anime else None,
+        "poster_url": anime.poster_url if anime else None,
+        "genres": anime.genres if anime else None,
+        "episodes": anime.episodes if anime else None,
+        "status": anime.status if anime else None,
+        "score": anime.score if anime else None,
+        "year": anime.year if anime else None,
+        "anime_id": entry.anime_id,
+        # The first channel, kept for older clients, plus the full list.
+        "channel_link": (primary.url if primary else entry.channel_link),
+        "channel_kind": (primary.kind if primary else entry.channel_kind),
+        "channel_count": len(links),
+        "channels": [
+            {"source": link.source_chat, "url": link.url, "kind": link.kind} for link in links
+        ],
+        "quality_count": len(entry.qualities),
+        "qualities": [_quality_card(q) for q in entry.qualities],
+    }
+
+
+def _quality_card(link: QualityLink) -> dict:
+    return {
+        "quality": link.quality,
+        "url": link.url,
+        "label": link.label,
+        "via_bot": link.via_bot,
+        "batch": link.batch,
+    }
 
 
 def _anime_card(anime: Anime, posts: list[Post]) -> dict:
@@ -18,7 +68,7 @@ def _anime_card(anime: Anime, posts: list[Post]) -> dict:
     return {
         "id": anime.id,
         "mal_id": anime.mal_id,
-        "title": anime.title,
+        "title": anime.title_english or anime.title,
         "title_english": anime.title_english,
         "poster_url": anime.poster_url,
         "genres": anime.genres,
@@ -64,7 +114,7 @@ def home(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_session),
 ):
-    stmt = select(Anime).order_by(Anime.title.asc())
+    stmt = select(Anime).order_by(func.coalesce(Anime.title_english, Anime.title).asc())
     if q:
         like = f"%{q.strip()}%"
         stmt = stmt.where(
@@ -92,6 +142,103 @@ def home(
 
     items = [_anime_card(a, posts_by_anime.get(a.id, [])) for a in anime_list]
     return {"items": items, "count": len(items), "offset": offset}
+
+
+@router.get("/catalog")
+def catalog(
+    q: str | None = Query(None, description="Search anime names"),
+    genre: str | None = None,
+    limit: int = Query(120, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_session),
+):
+    """The curated catalog: every anime listed by an index channel."""
+    stmt = (
+        select(AnimeEntry)
+        .options(
+            selectinload(AnimeEntry.anime),
+            selectinload(AnimeEntry.qualities),
+            selectinload(AnimeEntry.channels),
+        )
+        .outerjoin(Anime, AnimeEntry.anime_id == Anime.id)
+        # Sort by the English name the grid shows, not the raw channel name.
+        .order_by(func.coalesce(Anime.title_english, Anime.title, AnimeEntry.raw_name).asc())
+    )
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                AnimeEntry.raw_name.ilike(like),
+                Anime.title.ilike(like),
+                Anime.title_english.ilike(like),
+            )
+        )
+    if genre:
+        stmt = stmt.where(Anime.genres.ilike(f"%{genre}%"))
+    rows = db.scalars(stmt.offset(offset).limit(limit)).all()
+    items = [_entry_card(r) for r in rows]
+    return {"items": items, "count": len(items), "offset": offset}
+
+
+@router.get("/entry/{entry_id}")
+def entry_detail(entry_id: int, db: Session = Depends(get_session)):
+    """Full detail for one catalog entry, including channel + quality links."""
+    entry = db.scalar(
+        select(AnimeEntry)
+        .options(
+            selectinload(AnimeEntry.anime),
+            selectinload(AnimeEntry.qualities),
+            selectinload(AnimeEntry.channels),
+        )
+        .where(AnimeEntry.id == entry_id)
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    card = _entry_card(entry)
+    anime = entry.anime
+    card["synopsis"] = anime.synopsis if anime else None
+    card["banner_url"] = anime.banner_url if anime else None
+    card["title_japanese"] = anime.title_japanese if anime else None
+    card["mal_id"] = anime.mal_id if anime else None
+    return card
+
+
+@router.post("/entry/{entry_id}/quality")
+async def add_quality(entry_id: int, payload: dict, x_admin_token: str = Header(default="")):
+    """Attach a manual quality link (e.g. a file-share bot deep link)."""
+    settings = get_settings()
+    if settings.admin_token and x_admin_token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    quality = (payload.get("quality") or "").strip()
+    url = (payload.get("url") or "").strip()
+    if not quality or not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="quality and a valid url are required")
+    from ..services.catalog import add_manual_quality
+
+    db = session_scope()
+    try:
+        entry = db.get(AnimeEntry, entry_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Entry not found")
+        link = await add_manual_quality(db, entry, quality, url)
+        return _quality_card(link)
+    finally:
+        db.close()
+
+
+@router.post("/catalog/refresh")
+async def catalog_refresh(x_admin_token: str = Header(default="")):
+    """Re-read every configured index channel and rebuild the catalog."""
+    settings = get_settings()
+    if settings.admin_token and x_admin_token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    from ..services import catalog as catalog_service
+
+    db = session_scope()
+    try:
+        return await catalog_service.refresh_all(db)
+    finally:
+        db.close()
 
 
 @router.get("/genres")
