@@ -16,12 +16,30 @@
     search: document.getElementById("searchInput"),
     clear: document.getElementById("clearBtn"),
     genres: document.getElementById("genreBar"),
+    letters: document.getElementById("letterBar"),
+    sort: document.getElementById("sortSelect"),
+    popularBlock: document.getElementById("popularBlock"),
+    popularRail: document.getElementById("popularRail"),
+    ongoingBlock: document.getElementById("ongoingBlock"),
+    ongoingRail: document.getElementById("ongoingRail"),
     detail: document.getElementById("detail"),
     sheet: document.getElementById("sheet"),
     channelsBtn: document.getElementById("channelsBtn"),
+    topBtn: document.getElementById("topBtn"),
   };
 
-  const state = { q: "", genre: null, items: [], genres: [], channels: [], loading: false };
+  const state = {
+    q: "",
+    genre: null,
+    letter: null,
+    sort: "title",
+    items: [],
+    genres: [],
+    channels: [],
+    popular: [],
+    ongoing: [],
+    loading: false,
+  };
 
   const api = async (path) => {
     const res = await fetch(path, { headers: { Accept: "application/json" } });
@@ -33,10 +51,14 @@
     String(str).replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  const placeholder = (title = "") => {
-    const letter = (String(title).trim()[0] || "?").toUpperCase();
-    return `<div class="fallback">${escapeHtml(letter)}</div>`;
-  };
+  const initial = (title = "") => escapeHtml((String(title).trim()[0] || "?").toUpperCase());
+
+  const fallbackDiv = (title = "") => `<div class="fallback">${initial(title)}</div>`;
+
+  const posterImg = (url, title) =>
+    url
+      ? `<img loading="lazy" src="${escapeHtml(url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'fallback',textContent:'${initial(title)}'}))" />`
+      : fallbackDiv(title);
 
   const toast = (msg) => {
     let el = document.querySelector(".toast");
@@ -76,68 +98,119 @@
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
   });
 
-  /* ------------------------------ Rendering ------------------------------ */
+  const statusClass = (status) => {
+    const s = (status || "").toLowerCase();
+    if (s.includes("air") || s.includes("releas") || s.includes("ongoing")) return "airing";
+    if (s.includes("finish")) return "finished";
+    if (s.includes("upcoming") || s.includes("not yet")) return "upcoming";
+    return "";
+  };
+
+  /* ------------------------------ Cards ------------------------------ */
   function cardHtml(item) {
     const title = item.title || item.raw_name;
-    const poster = item.poster_url
-      ? `<img loading="lazy" src="${escapeHtml(item.poster_url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'fallback',textContent:'${escapeHtml((title[0] || '?').toUpperCase())}'}))" />`
-      : placeholder(title);
-    const badge = item.episodes ? `<span class="badge">${item.episodes} EP</span>` : "";
+    const badge = item.episode_count
+      ? `<span class="badge">${item.episode_count} EP</span>`
+      : item.episodes ? `<span class="badge">${item.episodes} EP</span>` : "";
     const score = item.score ? `<span class="score">★ ${Number(item.score).toFixed(1)}</span>` : "";
-    const kind = item.channel_kind ? kindInfo(item.channel_kind) : null;
-    const n = item.channel_count || (item.channel_link ? 1 : 0);
-    const sub = [item.year, n > 1 ? `${n} channels` : (kind ? kind.label : null)].filter(Boolean).join(" · ");
+    const st = statusClass(item.status);
+    const stTag = st ? `<span class="status-dot ${st}" title="${escapeHtml(item.status || "")}"></span>` : "";
     return `
       <article class="card" data-id="${item.id}">
-        <div class="poster">${poster}${badge}${score}</div>
+        <div class="poster">
+          ${posterImg(item.poster_url, title)}
+          <div class="poster-fade"></div>
+          ${badge}${score}${stTag}
+        </div>
         <div class="card-info">
           <h3 class="card-title">${escapeHtml(title)}</h3>
-          <div class="card-sub"><span>${escapeHtml(item.status || "")}</span><span>${escapeHtml(sub)}</span></div>
+          <div class="card-sub">
+            <span>${escapeHtml(item.year || "")}</span>
+            ${item.season_count > 1 ? `<span>${item.season_count} seasons</span>` : ""}
+          </div>
         </div>
       </article>`;
   }
 
+  function railCardHtml(item) {
+    const title = item.title || item.raw_name;
+    const score = item.score ? `<span class="rail-score">★ ${Number(item.score).toFixed(1)}</span>` : "";
+    return `
+      <article class="rail-card" data-id="${item.id}">
+        <div class="rail-poster">
+          ${posterImg(item.poster_url, title)}
+          <div class="poster-fade"></div>
+          ${score}
+          <span class="rail-play">▶</span>
+        </div>
+        <h4 class="rail-title">${escapeHtml(title)}</h4>
+      </article>`;
+  }
+
+  /* ------------------------------ Hero ------------------------------ */
   function renderHero(item) {
     if (!item) { els.hero.hidden = true; return; }
     const title = item.title || item.raw_name;
-    const bg = item.poster_url ? `style="background-image:url('${escapeHtml(item.poster_url)}')"` : "";
+    const bg = (item.banner_url || item.poster_url)
+      ? `style="background-image:url('${escapeHtml(item.banner_url || item.poster_url)}')"`
+      : "";
+    const genres = (item.genres || "").split(",").map((g) => g.trim()).filter(Boolean).slice(0, 3);
     const kind = item.channel_kind ? kindInfo(item.channel_kind) : null;
     els.hero.hidden = false;
     els.hero.innerHTML = `
       <div class="hero-bg" ${bg}></div>
       <div class="hero-shade"></div>
       <div class="hero-body">
-        <span class="hero-tag">Featured · Indexed</span>
+        <span class="hero-tag">${kind ? kind.icon + " " + kind.label : "Featured"}</span>
         <h2 class="hero-title">${escapeHtml(title)}</h2>
         <div class="hero-meta">
           ${item.score ? `<b>★ ${Number(item.score).toFixed(1)}</b>` : ""}
           ${item.year ? `<span>${item.year}</span>` : ""}
           ${item.episodes ? `<span>${item.episodes} episodes</span>` : ""}
-          ${kind ? `<span>${kind.icon} ${kind.label}</span>` : ""}
+          ${item.status ? `<span>${escapeHtml(item.status)}</span>` : ""}
         </div>
-        <button class="btn btn-primary" data-open="${item.id}">▶ Open</button>
+        ${genres.length ? `<div class="hero-genres">${genres.map((g) => `<span>${escapeHtml(g)}</span>`).join("")}</div>` : ""}
+        <button class="btn btn-primary" data-open="${item.id}">▶ Watch Now</button>
       </div>`;
   }
 
+  /* ------------------------------ Rails ------------------------------ */
+  function renderRail(blockEl, railEl, items) {
+    if (!items || !items.length) { blockEl.hidden = true; return; }
+    blockEl.hidden = false;
+    railEl.innerHTML = items.map(railCardHtml).join("");
+    railEl.querySelectorAll(".rail-card").forEach((el) => {
+      el.addEventListener("click", () => {
+        const item = items.find((i) => String(i.id) === el.dataset.id);
+        if (item) openDetail(item);
+      });
+    });
+  }
+
+  function renderRails() {
+    renderRail(els.popularBlock, els.popularRail, state.popular);
+    renderRail(els.ongoingBlock, els.ongoingRail, state.ongoing);
+  }
+
+  /* ------------------------------ Grid ------------------------------ */
   function renderGrid() {
     els.loader.hidden = true;
     const items = state.items;
     els.empty.hidden = items.length > 0;
     if (!items.length) {
       els.grid.innerHTML = "";
-      els.hero.hidden = true;
-      els.empty.querySelector("h2").textContent = state.q || state.genre ? "No matches" : "Nothing indexed yet";
-      els.empty.querySelector("p").textContent = state.q || state.genre
-        ? "Try a different title or clear the filters."
-        : "Add an index channel with /import so its anime list shows up here.";
+      els.empty.querySelector("h2").textContent =
+        state.q || state.genre || state.letter ? "No matches" : "Nothing indexed yet";
+      els.empty.querySelector("p").textContent =
+        state.q || state.genre || state.letter
+          ? "Try a different title or clear the filters."
+          : "Add an index channel with /catalog so its anime list shows up here.";
       return;
     }
-    const [featured, ...rest] = items;
-    renderHero(featured);
-    els.grid.innerHTML = rest.map(cardHtml).join("");
-    els.grid.querySelectorAll(".card").forEach((el, i) => {
-      el.style.animationDelay = Math.min(i * 22, 300) + "ms";
-      el.addEventListener("click", () => openDetail(items[i + 1]));
+    els.grid.innerHTML = items.map(cardHtml).join("");
+    els.grid.querySelectorAll(".card").forEach((el) => {
+      const item = items.find((i) => String(i.id) === el.dataset.id);
+      el.addEventListener("click", () => openDetail(item));
     });
   }
 
@@ -150,7 +223,28 @@
     els.genres.querySelectorAll(".chip").forEach((chip) =>
       chip.addEventListener("click", () => {
         state.genre = chip.dataset.genre || null;
+        state.letter = null;
         renderGenres();
+        renderLetters();
+        load();
+      })
+    );
+  }
+
+  function renderLetters() {
+    const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+    els.letters.innerHTML =
+      `<button class="chip small ${state.letter ? "" : "active"}" data-letter="">All</button>` +
+      letters.map((l) =>
+        `<button class="chip small ${state.letter === l ? "active" : ""}" data-letter="${l}">${l}</button>`
+      ).join("") +
+      `<button class="chip small ${state.letter === "#" ? "active" : ""}" data-letter="#">#</button>`;
+    els.letters.querySelectorAll(".chip").forEach((chip) =>
+      chip.addEventListener("click", () => {
+        state.letter = chip.dataset.letter || null;
+        state.genre = null;
+        renderGenres();
+        renderLetters();
         load();
       })
     );
@@ -166,9 +260,14 @@
           <span class="q-sub">${q.batch ? "Batch" : q.via_bot ? "via bot" : "Download"}</span>
         </button>`).join("");
     }
-    return `<p class="hint">No quality links yet. Add one from the bot with
-      <code>/quality ${item.id} 1080p &lt;link&gt;</code>, or send the files to your file-share bot
-      and paste the links here.</p>`;
+    // No per-quality links yet: show the fixed set every title carries.
+    const tags = (item.quality_tags && item.quality_tags.length)
+      ? item.quality_tags : ["480p", "720p", "1080p", "HD-RIP"];
+    return tags.map((q) => `
+      <div class="quality-btn static">
+        <span class="q-name">${escapeHtml(String(q).toUpperCase())}</span>
+        <span class="q-sub">Available</span>
+      </div>`).join("");
   }
 
   function channelButtons(full) {
@@ -177,21 +276,81 @@
       : (full.channel_link ? [{ source: null, url: full.channel_link, kind: full.channel_kind }] : []);
     if (!list.length) return `<p class="hint">No channel link recorded for this title yet.</p>`;
     const multi = list.length > 1;
-    return list.map((ch, i) => {
+    return list.map((ch) => {
       const kind = ch.kind ? kindInfo(ch.kind) : null;
       const label = kind ? kind.label : "Open link";
-      // With several sources, name the index channel so the choice is obvious.
       const title = multi && ch.source ? ch.source : label;
       return `
         <button class="channel-btn kind-${escapeHtml(ch.kind || "external")}" data-link="${escapeHtml(ch.url)}">
           <span class="ch-icon">${kind ? kind.icon : "🔗"}</span>
           <span class="ch-main">
             <span class="ch-title">${escapeHtml(title)}</span>
-            <span class="ch-url">${escapeHtml(multi ? label + " · " + ch.url : ch.url)}</span>
+            <span class="ch-url">${escapeHtml(label)}</span>
           </span>
           <span class="ch-go">›</span>
         </button>`;
     }).join("");
+  }
+
+  function detailMetaRow(full) {
+    const pills = [];
+    if (full.score) pills.push(`<span class="pill gold">★ ${Number(full.score).toFixed(1)}</span>`);
+    if (full.year) pills.push(`<span class="pill">${full.year}</span>`);
+    if (full.status) pills.push(`<span class="pill ${statusClass(full.status)}">${escapeHtml(full.status)}</span>`);
+    if (full.episodes) pills.push(`<span class="pill">${full.episodes} EP</span>`);
+    return pills.join("");
+  }
+
+  function seasonPosterStrip(seasons) {
+    if (!seasons || seasons.length < 2) return "";
+    return `
+      <p class="section-label">Seasons</p>
+      <div class="season-strip">
+        ${seasons.map((s, i) => `
+          <button class="season-poster ${i === 0 ? "active" : ""}" data-season="${s.number}">
+            <div class="season-img">${posterImg(s.poster_url, "S" + s.number)}</div>
+            <span class="season-tag">Season ${String(s.number).padStart(2, "0")}</span>
+          </button>`).join("")}
+      </div>`;
+  }
+
+  function episodeList(season) {
+    const eps = (season && season.episodes) || [];
+    if (!eps.length) {
+      return `<p class="hint">No episodes added yet for this season. The owner adds them from the bot with the episode message.</p>`;
+    }
+    return `
+      <div class="episode-list">
+        ${eps.map((ep) => `
+          <button class="episode-row" data-link="${escapeHtml(ep.url)}">
+            <span class="ep-index">${String(ep.number).padStart(2, "0")}</span>
+            <span class="ep-main">
+              <span class="ep-title">${escapeHtml(ep.title || "Episode " + String(ep.number).padStart(2, "0"))}</span>
+              <span class="ep-sub">Tap to watch</span>
+            </span>
+            <span class="ep-play">▶</span>
+          </button>`).join("")}
+      </div>`;
+  }
+
+  function seasonDetails(season) {
+    const quality = (season.quality_tags && season.quality_tags.length)
+      ? season.quality_tags : ["480p", "720p", "1080p", "HD-RIP"];
+    return `
+      <div class="release-details">
+        <span><b>Audio</b> ${escapeHtml(season.audio || "Japanese")}</span>
+        <span><b>Subtitles</b> ${escapeHtml(season.subtitles || "English Sub")}</span>
+        <span><b>Quality</b> ${quality.map((q) => escapeHtml(String(q))).join(" · ")}</span>
+      </div>`;
+  }
+
+  function recommendationsHtml(items) {
+    if (!items || !items.length) return "";
+    return `
+      <p class="section-label">Recommended</p>
+      <div class="rail rec-rail">
+        ${items.map(railCardHtml).join("")}
+      </div>`;
   }
 
   async function openDetail(item) {
@@ -203,50 +362,79 @@
     try { full = await api("/api/entry/" + item.id); } catch (e) { /* fall back to card data */ }
 
     const title = full.title || full.raw_name;
-    const bg = full.poster_url ? `style="background-image:url('${escapeHtml(full.poster_url)}')"` : "";
-    const poster = full.poster_url
-      ? `<img src="${escapeHtml(full.poster_url)}" alt="" />`
-      : placeholder(title);
+    const bg = (full.banner_url || full.poster_url)
+      ? `style="background-image:url('${escapeHtml(full.banner_url || full.poster_url)}')"`
+      : "";
     const genres = (full.genres || "").split(",").map((g) => g.trim()).filter(Boolean);
-    const count = (full.channels && full.channels.length) || (full.channel_link ? 1 : 0);
-    const kind = full.channel_kind ? kindInfo(full.channel_kind) : null;
-    const chanLabel = count > 1 ? `${count} channels` : (kind ? kind.label : null);
+    const seasons = (full.seasons && full.seasons.length)
+      ? full.seasons
+      : [{
+          number: 1, episodes: [], audio: full.audio, subtitles: full.subtitles,
+          quality_tags: full.quality_tags, poster_url: full.poster_url,
+        }];
+    const watchUrl = (full.channels && full.channels[0] && full.channels[0].url) || full.channel_link || "";
 
     els.detail.innerHTML = `
       <div class="detail-banner">
         <div class="hero-bg" ${bg}></div>
         <div class="hero-shade"></div>
         <button class="detail-close" id="detailClose">✕</button>
-      </div>
-      <div class="detail-head">
-        <div class="detail-poster">${poster}</div>
-        <div class="detail-titlebox">
+        <div class="detail-banner-body">
           <h2 class="detail-title">${escapeHtml(title)}</h2>
-          <div class="detail-meta">
-            ${full.score ? `<span class="pill gold">★ ${Number(full.score).toFixed(1)}</span>` : ""}
-            ${full.year ? `<span class="pill">${full.year}</span>` : ""}
-            ${full.episodes ? `<span class="pill">${full.episodes} EP</span>` : ""}
-            ${full.status ? `<span class="pill">${escapeHtml(full.status)}</span>` : ""}
-            ${chanLabel ? `<span class="pill">${escapeHtml(chanLabel)}</span>` : ""}
-          </div>
+          <div class="detail-meta">${detailMetaRow(full)}</div>
+          <button class="btn btn-primary watch-now" data-link="${escapeHtml(watchUrl)}">▶ Watch Now</button>
         </div>
       </div>
       <div class="detail-body">
         ${genres.length ? `<div class="detail-genres">${genres.map((g) => `<span class="genre-tag">${escapeHtml(g)}</span>`).join("")}</div>` : ""}
+        <div class="info-line">
+          ${full.studio ? `<span><b>Studio</b> ${escapeHtml(full.studio)}</span>` : ""}
+          ${full.year ? `<span><b>Year</b> ${full.year}</span>` : ""}
+          ${full.episode_count ? `<span><b>Episodes</b> ${full.episode_count}</span>` : ""}
+        </div>
         ${full.synopsis ? `<p class="synopsis">${escapeHtml(full.synopsis)}</p>` : ""}
-        ${full.note ? `<p class="detail-note">${escapeHtml(full.note)}</p>` : ""}
 
-        <p class="section-label">${(full.channels && full.channels.length > 1) ? `Available in ${full.channels.length} channels` : "Channel"}</p>
+        <p class="section-label">Channel</p>
         ${channelButtons(full)}
+
+        ${seasonPosterStrip(seasons)}
+        <div id="seasonView"></div>
 
         <p class="section-label">Quality &amp; downloads</p>
         <div class="quality-grid">${qualityChips(full)}</div>
+
+        ${recommendationsHtml(full.recommendations)}
       </div>`;
 
+    const seasonView = document.getElementById("seasonView");
+    const renderSeason = (number) => {
+      const season = seasons.find((s) => s.number === number) || seasons[0];
+      seasonView.innerHTML = `
+        <p class="section-label">Season ${String(season.number).padStart(2, "0")} · Episodes</p>
+        ${seasonDetails(season)}
+        ${episodeList(season)}`;
+      seasonView.querySelectorAll("[data-link]").forEach((el) =>
+        el.addEventListener("click", () => openLink(el.dataset.link))
+      );
+      els.detail.querySelectorAll(".season-poster").forEach((el) =>
+        el.classList.toggle("active", Number(el.dataset.season) === season.number)
+      );
+    };
+    renderSeason(seasons[0].number);
+
     document.getElementById("detailClose").addEventListener("click", closeDetail);
-    els.detail.querySelectorAll("[data-link]").forEach((el) =>
+    els.detail.querySelectorAll(".channel-btn, .quality-btn[data-link], .watch-now").forEach((el) =>
       el.addEventListener("click", () => openLink(el.dataset.link))
     );
+    els.detail.querySelectorAll(".season-poster").forEach((el) =>
+      el.addEventListener("click", () => renderSeason(Number(el.dataset.season)))
+    );
+    els.detail.querySelectorAll(".rec-rail .rail-card").forEach((el) => {
+      el.addEventListener("click", () => {
+        const rec = (full.recommendations || []).find((r) => String(r.id) === el.dataset.id);
+        if (rec) { closeDetail(); setTimeout(() => openDetail(rec), 60); }
+      });
+    });
     document.body.style.overflow = "hidden";
   }
 
@@ -286,12 +474,23 @@
   }
 
   /* ------------------------------ Data loading ------------------------------ */
+  async function loadSections() {
+    try {
+      const data = await api("/api/sections?limit=14");
+      state.popular = data.popular || [];
+      state.ongoing = data.ongoing || [];
+      renderHero(data.hero);
+      renderRails();
+    } catch (e) { /* rails are optional */ }
+  }
+
   async function load() {
     state.loading = true;
     els.loader.hidden = false;
     const params = new URLSearchParams();
     if (state.q) params.set("q", state.q);
     if (state.genre) params.set("genre", state.genre);
+    params.set("sort", state.sort);
     try {
       const data = await api("/api/catalog?" + params.toString());
       state.items = data.items || [];
@@ -318,10 +517,18 @@
     els.clear.hidden = true;
     load();
   });
+  els.sort.addEventListener("change", (e) => {
+    state.sort = e.target.value;
+    load();
+  });
   els.channelsBtn.addEventListener("click", openChannels);
+  els.topBtn.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
   els.hero.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-open]");
-    if (btn) openDetail(state.items[0]);
+    if (!btn) return;
+    const item = state.items.find((i) => String(i.id) === btn.dataset.open) ||
+      state.popular.find((i) => String(i.id) === btn.dataset.open);
+    if (item) openDetail(item);
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDetail(); });
 
@@ -332,6 +539,7 @@
       state.genres = (g.items || []).slice(0, 14);
       renderGenres();
     } catch (e) {}
-    await load();
+    renderLetters();
+    await Promise.all([loadSections(), load()]);
   })();
 })();
