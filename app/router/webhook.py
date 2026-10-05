@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import Channel, Post, session_scope
-from ..services import index_parser, rss
+from ..services import episode_parser, index_parser, rss
 from ..services.ingest import build_episode_hint, ingest_entries, match_or_create_anime
 from ..services.telegram import TelegramClient, TelegramError
 
@@ -225,7 +225,11 @@ async def _handle_channel_post(message: dict) -> None:
 async def _handle_message(message: dict) -> None:
     text = (message.get("text") or "").strip()
     chat_id = message["chat"]["id"]
+    user_id = message.get("from", {}).get("id")
     if not text.startswith("/"):
+        # A plain message in the episode format adds episodes without a command.
+        if episode_parser.looks_like_episode_message(text):
+            await _send_episodes(chat_id, text, user_id)
         return
 
     command = text.split()[0].split("@")[0].lower()
@@ -249,6 +253,76 @@ async def _handle_message(message: dict) -> None:
         await _send_catalog_import(chat_id, text)
     elif command == "/quality":
         await _send_quality(chat_id, text, message.get("from", {}).get("id"))
+    elif command in ("/episodes", "/addepisodes"):
+        await _send_episodes(chat_id, text, user_id)
+
+
+async def _send_episodes(chat_id: int, text: str, user_id: int | None) -> None:
+    """Attach seasons and episodes from an episode-format message.
+
+    The message names a title, then lists seasons, audio, subtitles and episode
+    links. The body is the text after an optional ``/episodes`` command word.
+    """
+    from ..services import catalog as catalog_service
+
+    body = text
+    if text.startswith("/"):
+        parts = text.split(maxsplit=1)
+        body = parts[1] if len(parts) > 1 else ""
+
+    parsed = episode_parser.parse_episode_message(body)
+    if not parsed or not parsed["name"]:
+        await _notify(chat_id, _EPISODE_HELP)
+        return
+    if not any(season["episodes"] for season in parsed["seasons"]):
+        await _notify(
+            chat_id,
+            f"⚠️ Found <b>{parsed['name']}</b> but no episode links. "
+            "Add lines like <code>Episode 1 - https://t.me/…</code>.",
+        )
+        return
+
+    db = session_scope()
+    try:
+        if not _is_admin(db, user_id):
+            await _notify(chat_id, "🔒 Only owners and admins can add episodes.")
+            return
+        entry = catalog_service.find_entry(db, parsed["name"])
+        if entry is None:
+            await _notify(
+                chat_id,
+                f"❌ No catalog entry matches <b>{parsed['name']}</b>.\n"
+                "Build the catalog first with <code>/catalog @YourChannel</code>, "
+                "or check the spelling.",
+            )
+            return
+        result = catalog_service.upsert_episodes(db, entry, parsed)
+        seasons = catalog_service.entry_seasons(entry)
+    finally:
+        db.close()
+
+    lines = [f"✅ Episodes added to <b>{entry.raw_name}</b>"]
+    for season in seasons:
+        lines.append(f"• Season {season['number']:02d}: {len(season['episodes'])} episode(s)")
+    lines.append(
+        f"\n<b>+{result['seasons_added']}</b> season(s), "
+        f"<b>+{result['episodes_added']}</b> episode(s)"
+        + (f", {result['episodes_updated']} refreshed" if result["episodes_updated"] else "")
+    )
+    await _notify(chat_id, "\n".join(lines), reply_markup=_mini_app_keyboard())
+
+
+_EPISODE_HELP = (
+    "Send the title and its episodes in this format:\n\n"
+    "<pre>Anime name - Demon Slayer\n"
+    "Season - Season 01\n"
+    "Language - English, Japanese\n"
+    "Episode 1 - https://t.me/FileBot?start=…\n"
+    "Episode 2 - https://t.me/FileBot?start=…</pre>\n"
+    "Repeat the <b>Anime name</b>/<b>Season</b> block for more seasons. "
+    "<b>Subtitle</b> and <b>Quality</b> lines are optional; every title shows "
+    "480p, 720p, 1080p, HD-RIP and English Sub by default."
+)
 
 
 async def _send_catalog_import(chat_id: int, text: str) -> None:
@@ -375,7 +449,17 @@ async def _send_help(chat_id: int) -> None:
         "/feed – treat your channel as a release feed\n"
         "/import – paste a name+link list to index it manually\n"
         "/catalog &lt;@channel&gt; – build the catalog from an index channel\n"
-        "/quality &lt;id&gt; &lt;quality&gt; &lt;link&gt; – add a download link"
+        "/quality &lt;id&gt; &lt;quality&gt; &lt;link&gt; – add a download link\n\n"
+        "<b>Adding episodes</b>\n"
+        "Send the bot a message in this format and the episodes are attached to "
+        "the matching title:\n"
+        "<pre>Anime name - Demon Slayer\n"
+        "Season - Season 01\n"
+        "Language - English, Japanese\n"
+        "Episode 1 - https://t.me/FileBot?start=…\n"
+        "Episode 2 - https://t.me/FileBot?start=…</pre>\n"
+        "Repeat the block for more seasons. <code>/episodes</code> does the same "
+        "when the text is sent as a command."
     )
     await _notify(chat_id, text, reply_markup=_mini_app_keyboard())
 

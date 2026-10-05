@@ -13,14 +13,24 @@ from ..models import (
     EntryChannel,
     Post,
     QualityLink,
+    Season,
     get_session,
     session_scope,
 )
-from ..services.catalog import display_title
+from ..services.catalog import display_title, entry_seasons
 from ..services.ingest import ingest_channel
 from ..services.webapp_auth import validate_init_data
 
 router = APIRouter(prefix="/api", tags=["api"])
+
+# Every post shows the release qualities and subtitles the channel offers, even
+# before an owner sends the per-title episode message.
+DEFAULT_QUALITIES = ["480p", "720p", "1080p", "HD-RIP"]
+DEFAULT_SUBTITLES = "English Sub"
+
+
+def _split_tags(value: str | None) -> list[str]:
+    return [part.strip() for part in (value or "").split(",") if part.strip()]
 
 
 def _entry_card(entry: AnimeEntry) -> dict:
@@ -28,6 +38,8 @@ def _entry_card(entry: AnimeEntry) -> dict:
     anime = entry.anime
     links = entry.channels or []
     primary = links[0] if links else None
+    seasons = entry_seasons(entry)
+    episode_count = sum(len(s["episodes"]) for s in seasons)
     return {
         "id": entry.id,
         "raw_name": entry.raw_name,
@@ -35,7 +47,10 @@ def _entry_card(entry: AnimeEntry) -> dict:
         "title": display_title(entry),
         "title_english": anime.title_english if anime else None,
         "poster_url": anime.poster_url if anime else None,
+        "banner_url": anime.banner_url if anime else None,
+        "synopsis": anime.synopsis if anime else None,
         "genres": anime.genres if anime else None,
+        "studio": anime.studio if anime else None,
         "episodes": anime.episodes if anime else None,
         "status": anime.status if anime else None,
         "score": anime.score if anime else None,
@@ -50,6 +65,12 @@ def _entry_card(entry: AnimeEntry) -> dict:
         ],
         "quality_count": len(entry.qualities),
         "qualities": [_quality_card(q) for q in entry.qualities],
+        # Manual release details. The fixed quality/subtitle set is always shown.
+        "audio": entry.audio or None,
+        "subtitles": entry.subtitles or DEFAULT_SUBTITLES,
+        "quality_tags": _split_tags(entry.quality_tags) or list(DEFAULT_QUALITIES),
+        "season_count": len(seasons),
+        "episode_count": episode_count,
     }
 
 
@@ -144,10 +165,25 @@ def home(
     return {"items": items, "count": len(items), "offset": offset}
 
 
+def _catalog_order(sort: str):
+    """Ordering for the catalog grid. Defaults to the A–Z the grid shows."""
+    title = func.coalesce(Anime.title_english, Anime.title, AnimeEntry.raw_name)
+    if sort == "score":
+        return (func.coalesce(Anime.score, 0).desc(), title.asc())
+    if sort == "year":
+        return (func.coalesce(Anime.year, 0).desc(), title.asc())
+    if sort == "recent":
+        return (AnimeEntry.id.desc(),)
+    if sort == "episodes":
+        return (func.coalesce(Anime.episodes, 0).desc(), title.asc())
+    return (title.asc(),)
+
+
 @router.get("/catalog")
 def catalog(
     q: str | None = Query(None, description="Search anime names"),
     genre: str | None = None,
+    sort: str = Query("title", pattern="^(title|score|year|recent|episodes)$"),
     limit: int = Query(120, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_session),
@@ -159,10 +195,10 @@ def catalog(
             selectinload(AnimeEntry.anime),
             selectinload(AnimeEntry.qualities),
             selectinload(AnimeEntry.channels),
+            selectinload(AnimeEntry.seasons).selectinload(Season.episodes),
         )
         .outerjoin(Anime, AnimeEntry.anime_id == Anime.id)
-        # Sort by the English name the grid shows, not the raw channel name.
-        .order_by(func.coalesce(Anime.title_english, Anime.title, AnimeEntry.raw_name).asc())
+        .order_by(*_catalog_order(sort))
     )
     if q:
         like = f"%{q.strip()}%"
@@ -180,15 +216,73 @@ def catalog(
     return {"items": items, "count": len(items), "offset": offset}
 
 
+def _catalog_query(sort: str):
+    return (
+        select(AnimeEntry)
+        .options(
+            selectinload(AnimeEntry.anime),
+            selectinload(AnimeEntry.qualities),
+            selectinload(AnimeEntry.channels),
+            selectinload(AnimeEntry.seasons).selectinload(Season.episodes),
+        )
+        .outerjoin(Anime, AnimeEntry.anime_id == Anime.id)
+        .order_by(*_catalog_order(sort))
+    )
+
+
+@router.get("/sections")
+def sections(
+    limit: int = Query(14, ge=1, le=40),
+    db: Session = Depends(get_session),
+):
+    """Home rails: a featured hero, most popular, and currently airing titles."""
+    rows = db.scalars(_catalog_query("title")).all()
+    cards = [_entry_card(r) for r in rows]
+    if not cards:
+        return {"hero": None, "popular": [], "ongoing": [], "latest": []}
+
+    scored = [c for c in cards if c.get("score")]
+    featured = max(scored, key=lambda c: c["score"]) if scored else cards[0]
+
+    popular = sorted(
+        scored or cards,
+        key=lambda c: (c.get("score") or 0, c.get("year") or 0),
+        reverse=True,
+    )[:limit]
+
+    airing = ("airing", "releasing", "ongoing", "currently airing")
+    ongoing = [c for c in cards if (c.get("status") or "").lower() in airing]
+    if len(ongoing) < limit:
+        # Pad with the newest titles so the rail is never sparse.
+        seen = {c["id"] for c in ongoing}
+        recent = sorted(
+            (c for c in cards if c["id"] not in seen),
+            key=lambda c: (c.get("year") or 0),
+            reverse=True,
+        )
+        ongoing = (ongoing + recent)[:limit]
+    else:
+        ongoing = ongoing[:limit]
+
+    latest = sorted(cards, key=lambda c: c["id"], reverse=True)[:limit]
+    return {
+        "hero": featured,
+        "popular": popular,
+        "ongoing": ongoing,
+        "latest": latest,
+    }
+
+
 @router.get("/entry/{entry_id}")
 def entry_detail(entry_id: int, db: Session = Depends(get_session)):
-    """Full detail for one catalog entry, including channel + quality links."""
+    """Full detail for one catalog entry, including seasons, episodes and links."""
     entry = db.scalar(
         select(AnimeEntry)
         .options(
             selectinload(AnimeEntry.anime),
             selectinload(AnimeEntry.qualities),
             selectinload(AnimeEntry.channels),
+            selectinload(AnimeEntry.seasons).selectinload(Season.episodes),
         )
         .where(AnimeEntry.id == entry_id)
     )
@@ -196,11 +290,34 @@ def entry_detail(entry_id: int, db: Session = Depends(get_session)):
         raise HTTPException(status_code=404, detail="Entry not found")
     card = _entry_card(entry)
     anime = entry.anime
-    card["synopsis"] = anime.synopsis if anime else None
+    card["synopsis"] = entry.description or (anime.synopsis if anime else None)
     card["banner_url"] = anime.banner_url if anime else None
     card["title_japanese"] = anime.title_japanese if anime else None
     card["mal_id"] = anime.mal_id if anime else None
+    card["seasons"] = entry_seasons(entry)
+    card["recommendations"] = _recommendations(db, entry)
     return card
+
+
+def _recommendations(db: Session, entry: AnimeEntry, limit: int = 12) -> list[dict]:
+    """Other catalog titles sharing a genre with this one, best score first."""
+    genres = {g.strip().lower() for g in _split_tags(entry.anime.genres if entry.anime else None)}
+    if not genres:
+        return []
+
+    rows = db.scalars(_catalog_query("title")).all()
+    scored: list[tuple[int, float, dict]] = []
+    for row in rows:
+        if row.id == entry.id:
+            continue
+        row_genres = {g.strip().lower() for g in _split_tags(row.anime.genres if row.anime else None)}
+        overlap = len(genres & row_genres)
+        if not overlap:
+            continue
+        card = _entry_card(row)
+        scored.append((overlap, card.get("score") or 0, card))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [card for _, _, card in scored[:limit]]
 
 
 @router.post("/entry/{entry_id}/quality")
