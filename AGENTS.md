@@ -149,3 +149,22 @@ on the next pass instead of being stuck poster-less forever.
 `tests/test_index.py` is an integration suite. Feeds are served by a real local
 HTTP server; only the external metadata provider is stubbed using the captured
 AniList fixture `tests/anilist_frieren.json`. Keep tests on real code paths.
+
+## Posters, ongoing and popularity
+
+- Posters come only from `catalog.enrich_pending`. Nothing else fetches them, so
+  it must actually run: it is started on boot (`main.lifespan`), after `/catalog`,
+  `/ongoing` and `refresh_all`, and every 10 min by the scheduler
+  (`enrich_catalog`). It is resumable and skips titles that missed in the last 6 h
+  (`_missed`). `/enrich` starts it by hand. Never await it inside a webhook.
+- Never hardcode `BOT_TOKEN` / `DATABASE_URL` defaults in `config.py`.
+- `/api/sections`: `popular` = views desc, then score, then year; `ongoing` = the
+  `ongoing_entries` list (position order), falling back to AniList-airing titles,
+  never padded with unrelated titles.
+- `OngoingEntry` / `EntryView` are new tables on purpose: Postgres has no
+  `_migrate`, so new *columns* on existing tables would need a manual ALTER.
+- Plain-message "ongoing anime" lists and `/ongoing` go through
+  `services/ongoing_parser.py`; only `text_link` entities are used because
+  Telegram tags every typed URL as a `url` entity.
+- `Settings.index_channel_usernames` keeps the channel's original casing: the
+  `t.me/s` preview tags posts `data-post="Name/123"` and paging stops otherwise.

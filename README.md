@@ -105,6 +105,8 @@ validated with Telegram `initData` when auth is enabled.
 | `/refresh` | Re-scan feeds and index channels now |
 | `/quality <id> <quality> <url>` | Attach a manual download link to a catalog entry |
 | `/episodes` | Attach seasons and episodes to a title (see below) |
+| `/ongoing` | Manage the Ongoing rail (see below) |
+| `/enrich` | Fetch missing posters/metadata now |
 | `/status` | Show indexing stats |
 
 ### Adding episodes
@@ -134,6 +136,31 @@ a corrected message updates the links in place instead of duplicating them.
 Every title shows **480p · 720p · 1080p · HD-RIP** and **English Sub** by default
 until an owner overrides them.
 
+Add an optional season poster with a `Poster - https://…/image.jpg` line under
+the `Season -` line; otherwise the anime's poster is used. A title's detail page
+always shows its season list (one poster per season) with the episodes below.
+
+### Ongoing anime
+
+The **Ongoing** rail shows only the titles you list. Send the bot (admins only):
+
+```
+ongoing anime
+Overgeared - https://t.me/overgeared_dual
+The Apothecary diaries - https://t.me/+r7zltHPqpOswY2Jl
+```
+
+The message replaces the current list. Titles already in the catalog keep their
+poster; new ones are created and enriched automatically. The ongoing channel link
+is the first button on the title. Other forms: `/ongoing` (show the list),
+`/ongoing add` + lines (append), `/ongoing remove Title`, `/ongoing clear`.
+If the list is empty the rail falls back to titles AniList reports as airing.
+
+### Most Popular
+
+The rail ranks titles by how often they are opened in the Mini App, then by
+AniList score. Counts live in the `entry_views` table.
+
 ## Where the data is stored
 
 Everything lives in a single **SQLite database** at `data/index.db` (the path is
@@ -153,6 +180,8 @@ Tables:
 | `quality_links` | Download links per entry, tagged with quality (`1080p`, `Batch`, …) and whether they go through a file-share bot |
 | `seasons` | One row per season of an entry, with its own poster, synopsis, audio, subtitles and quality tags |
 | `episodes` | One row per episode of a season, pointing at the bot deep link that serves it |
+| `ongoing_entries` | Titles on the Ongoing rail, with the channel link the owner gave |
+| `entry_views` | Open counter per catalog entry, drives the Most Popular rail |
 
 Because the database is a file, **it needs a persistent disk in production**.
 On a host with an ephemeral filesystem the index is wiped on every deploy and
