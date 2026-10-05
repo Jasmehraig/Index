@@ -5,6 +5,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    BigInteger,
     String,
     Text,
     UniqueConstraint,
@@ -29,7 +30,7 @@ class Channel(Base):
     __tablename__ = "channels"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    chat_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     title: Mapped[str] = mapped_column(String(256))
     # "feed" = a channel whose posts are release files (default).
@@ -37,7 +38,7 @@ class Channel(Base):
     kind: Mapped[str] = mapped_column(String(16), default="feed")
     rss_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     invite_link: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    owner_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    owner_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     posts: Mapped[list["Post"]] = relationship(
