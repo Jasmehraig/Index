@@ -67,6 +67,7 @@ class Anime(Base):
     poster_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     banner_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     genres: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    studio: Mapped[str | None] = mapped_column(String(256), nullable=True)
     episodes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -137,6 +138,12 @@ class AnimeEntry(Base):
     channel_link: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     channel_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Manual release details, set from the bot's episode message. They apply to
+    # every post for this title, so they live on the entry, not on a season.
+    audio: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    subtitles: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    quality_tags: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     anime: Mapped["Anime | None"] = relationship()
@@ -146,6 +153,56 @@ class AnimeEntry(Base):
     qualities: Mapped[list["QualityLink"]] = relationship(
         back_populates="entry", cascade="all, delete-orphan"
     )
+    seasons: Mapped[list["Season"]] = relationship(
+        back_populates="entry", cascade="all, delete-orphan", order_by="Season.number"
+    )
+
+
+class Season(Base):
+    """One season of a catalog entry, with its own poster and release details.
+
+    A title with several seasons shows one poster per season; each season carries
+    its own episodes, audio, subtitles and quality tags.
+    """
+
+    __tablename__ = "seasons"
+    __table_args__ = (UniqueConstraint("entry_id", "number", name="uq_season_number"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("anime_entries.id", ondelete="CASCADE"), index=True
+    )
+    number: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    poster_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    synopsis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    audio: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    subtitles: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    quality_tags: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    entry: Mapped["AnimeEntry"] = relationship(back_populates="seasons")
+    episodes: Mapped[list["Episode"]] = relationship(
+        back_populates="season", cascade="all, delete-orphan", order_by="Episode.number"
+    )
+
+
+class Episode(Base):
+    """One episode of a season, pointing at the bot deep link that serves it."""
+
+    __tablename__ = "episodes"
+    __table_args__ = (UniqueConstraint("season_id", "number", name="uq_episode_number"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    season_id: Mapped[int] = mapped_column(
+        ForeignKey("seasons.id", ondelete="CASCADE"), index=True
+    )
+    number: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    url: Mapped[str] = mapped_column(String(1024))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    season: Mapped["Season"] = relationship(back_populates="episodes")
 
 
 class EntryChannel(Base):
@@ -203,17 +260,26 @@ _engine = None
 _SessionLocal = None
 
 
+def _as_psycopg_url(url: str) -> str:
+    """Pin the psycopg3 driver; SQLAlchemy defaults a bare URL to psycopg2."""
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://") :]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://") :]
+    return url
+
+
 def init_db(database_url: str | None = None):
     global _engine, _SessionLocal
     url = database_url or get_settings().database_url
-    if url.startswith("sqlite:///"):
-        path = url.replace("sqlite:///", "", 1)
-        if path and path != ":memory:":
-            from pathlib import Path
-
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-    _engine = create_engine(url, future=True)
     if url.startswith("sqlite"):
+        if url.startswith("sqlite:///"):
+            path = url.replace("sqlite:///", "", 1)
+            if path and path != ":memory:":
+                from pathlib import Path
+
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
+        _engine = create_engine(url, future=True)
         from sqlalchemy import event
 
         @event.listens_for(_engine, "connect")
@@ -223,6 +289,15 @@ def init_db(database_url: str | None = None):
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=10000")
             cursor.close()
+    else:
+        _engine = create_engine(
+            _as_psycopg_url(url),
+            future=True,
+            # Serverless Postgres (Neon, Supabase) drops idle connections when it
+            # suspends, so verify each checkout and recycle inside its window.
+            pool_pre_ping=True,
+            pool_recycle=300,
+        )
 
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, expire_on_commit=False)
     Base.metadata.create_all(_engine)
@@ -244,7 +319,14 @@ def _migrate(engine) -> None:
             "url": "VARCHAR(1024)",
             "entry_index": "INTEGER DEFAULT 0",
         },
-        "anime_entries": {"match_key": "VARCHAR(256)"},
+        "anime_entries": {
+            "match_key": "VARCHAR(256)",
+            "audio": "VARCHAR(256)",
+            "subtitles": "VARCHAR(256)",
+            "quality_tags": "VARCHAR(256)",
+            "description": "TEXT",
+        },
+        "anime": {"studio": "VARCHAR(256)"},
     }
     from sqlalchemy import inspect, text
 

@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
                 [
                     {"command": "start", "description": "Open the anime index"},
                     {"command": "catalog", "description": "Build catalog from an index channel"},
+                    {"command": "episodes", "description": "Add seasons and episodes to a title"},
                     {"command": "channels", "description": "List indexed channels"},
                     {"command": "quality", "description": "Add a download link to a title"},
                     {"command": "refresh", "description": "Re-scan channel feeds"},
