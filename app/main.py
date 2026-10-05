@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .models import init_db
-from app.routers import api, webhook
+from .routers import api, webhook
 from .services.scheduler import start_scheduler, stop_scheduler
 from .services.telegram import TelegramClient
 
