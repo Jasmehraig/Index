@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import Channel, Post, session_scope
-from ..services import episode_parser, index_parser, rss
+from ..services import episode_parser, index_parser, ongoing_parser, rss
 from ..services.ingest import build_episode_hint, ingest_entries, match_or_create_anime
 from ..services.telegram import TelegramClient, TelegramError
 
@@ -227,6 +227,10 @@ async def _handle_message(message: dict) -> None:
     chat_id = message["chat"]["id"]
     user_id = message.get("from", {}).get("id")
     if not text.startswith("/"):
+        # A plain "ongoing anime" list replaces the Ongoing rail without a command.
+        if ongoing_parser.looks_like_ongoing_message(text):
+            await _send_ongoing(chat_id, text, user_id, message.get("entities") or [])
+            return
         # A plain message in the episode format adds episodes without a command.
         if episode_parser.looks_like_episode_message(text):
             await _send_episodes(chat_id, text, user_id)
@@ -255,6 +259,10 @@ async def _handle_message(message: dict) -> None:
         await _send_quality(chat_id, text, message.get("from", {}).get("id"))
     elif command in ("/episodes", "/addepisodes"):
         await _send_episodes(chat_id, text, user_id)
+    elif command in ("/ongoing", "/airing"):
+        await _send_ongoing(chat_id, text, user_id, message.get("entities") or [])
+    elif command == "/enrich":
+        await _send_enrich(chat_id, user_id)
 
 
 async def _send_episodes(chat_id: int, text: str, user_id: int | None) -> None:
@@ -312,6 +320,126 @@ async def _send_episodes(chat_id: int, text: str, user_id: int | None) -> None:
     await _notify(chat_id, "\n".join(lines), reply_markup=_mini_app_keyboard())
 
 
+_ONGOING_HELP = (
+    "<b>Ongoing anime</b>\n\n"
+    "Send a list like this (it replaces the current Ongoing list):\n"
+    "<pre>ongoing anime\n"
+    "Overgeared - https://t.me/overgeared_dual\n"
+    "The Apothecary diaries - https://t.me/+r7zltHPqpOswY2Jl</pre>\n"
+    "<b>Commands</b>\n"
+    "<code>/ongoing</code> – show the current list\n"
+    "<code>/ongoing add</code> + lines – add without replacing\n"
+    "<code>/ongoing remove Title</code> – remove one title\n"
+    "<code>/ongoing clear</code> – empty the list"
+)
+
+
+async def _send_ongoing(chat_id: int, text: str, user_id: int | None, entities: list[dict]) -> None:
+    """Manage the Ongoing rail: replace, add, remove, clear or show the list."""
+    from ..services import catalog as catalog_service
+
+    body = text
+    if text.startswith("/"):
+        parts = text.split(maxsplit=1)
+        body = parts[1] if len(parts) > 1 else ""
+    first, _, rest = body.partition("\n")
+    word = first.strip().split(maxsplit=1)
+    action = word[0].lower() if word else ""
+    if "://" in first:
+        # "Clear - https://t.me/x" is a title, not the clear command.
+        action = ""
+
+    db = session_scope()
+    try:
+        # Showing the list is public; everything else needs an admin.
+        if not body.strip():
+            current = catalog_service.list_ongoing(db)
+            if not current:
+                await _notify(chat_id, "No ongoing anime yet.\n\n" + _ONGOING_HELP)
+                return
+            lines = [f"📺 <b>{len(current)} ongoing anime</b>", ""]
+            for i, (name, url) in enumerate(current, 1):
+                lines.append(f"{i}. <a href=\"{url}\">{name}</a>" if url else f"{i}. {name}")
+            await _notify(chat_id, "\n".join(lines), reply_markup=_mini_app_keyboard())
+            return
+
+        if not _is_admin(db, user_id):
+            await _notify(
+                chat_id,
+                "🔒 Only owners and admins can change the ongoing list. "
+                "Add your Telegram id to <code>ADMIN_USER_IDS</code>.",
+            )
+            return
+
+        if action == "clear":
+            removed = catalog_service.clear_ongoing(db)
+            await _notify(chat_id, f"🧹 Cleared {removed} title(s) from Ongoing.")
+            return
+
+        if action in ("remove", "delete", "rm"):
+            name = first.strip()[len(word[0]) :].strip() or rest.strip()
+            removed = catalog_service.remove_ongoing(db, name) if name else None
+            if removed:
+                await _notify(chat_id, f"✅ Removed <b>{removed}</b> from Ongoing.")
+            else:
+                await _notify(
+                    chat_id,
+                    "Could not find that title in the ongoing list. "
+                    "Use <code>/ongoing</code> to see the exact names.",
+                )
+            return
+
+        replace = action != "add"
+
+        # Parse the full message: entity offsets are relative to it. Typed
+        # "Name - link" lines and hyperlinked names both work.
+        items = ongoing_parser.parse_ongoing(text, entities)
+        if not items:
+            await _notify(chat_id, "⚠️ I could not find any <i>Name - link</i> lines.\n\n" + _ONGOING_HELP)
+            return
+
+        result = catalog_service.set_ongoing(db, items, replace=replace)
+    finally:
+        db.close()
+
+    lines = [
+        f"✅ Ongoing list {'updated' if replace else 'extended'}: <b>{result['total']}</b> title(s)",
+        f"• {result['linked']} already in the catalog, {result['created']} new",
+        "• 🖼 Posters load in the background",
+        "",
+    ]
+    lines += [f"{i}. {n}" for i, n in enumerate(result["names"], 1)]
+    await _notify(chat_id, "\n".join(lines), reply_markup=_mini_app_keyboard())
+
+
+async def _send_enrich(chat_id: int, user_id: int | None) -> None:
+    """Start a poster/metadata pass in the background and say how many are pending.
+
+    Not awaited here: a long pass inside the webhook would hit Telegram's timeout
+    and the update would be redelivered.
+    """
+    from ..services import catalog as catalog_service
+
+    db = session_scope()
+    try:
+        if not _is_admin(db, user_id):
+            await _notify(chat_id, "🔒 Only owners and admins can run this.")
+            return
+        pending = catalog_service.count_unenriched(db)
+    finally:
+        db.close()
+    if pending == 0:
+        await _notify(chat_id, "✅ Every title already has a poster and details.")
+        return
+    catalog_service.schedule_enrichment()
+    await _notify(
+        chat_id,
+        f"⏳ Fetching posters for <b>{pending}</b> title(s) in the background "
+        "(about 1–2 per second). Send /enrich again later to see what is left. "
+        "Titles that cannot be matched on AniList/MAL are retried every few hours.",
+    )
+
+
 _EPISODE_HELP = (
     "Send the title and its episodes in this format:\n\n"
     "<pre>Anime name - Demon Slayer\n"
@@ -360,6 +488,9 @@ async def _send_catalog_import(chat_id: int, text: str) -> None:
         catalog_service.backfill_match_keys(db)
         result = await catalog_service.import_from_channel(db, ref)
         collapsed = catalog_service.collapse_duplicates(db)
+        pending = catalog_service.count_unenriched(db)
+        # Posters, scores and genres load in the background after the import.
+        catalog_service.schedule_enrichment()
     except Exception as exc:  # noqa: BLE001 - surface any scrape failure to the user
         log.warning("Catalog import failed for %s: %s", ref, exc)
         await _notify(chat_id, f"❌ Could not read @{ref}. Is it public?")
@@ -379,7 +510,8 @@ async def _send_catalog_import(chat_id: int, text: str) -> None:
         f"• {result['created']} new, {result['updated']} refreshed "
         f"({result['total']} listed)\n"
         f"• {result.get('details', 0)} detail card(s) merged\n"
-        f"{merged_line}\n"
+        f"{merged_line}"
+        f"• 🖼 Fetching posters for {pending} title(s) in the background \n\n"
         "Open the mini app to browse it.",
         reply_markup=_mini_app_keyboard(),
     )
@@ -449,7 +581,9 @@ async def _send_help(chat_id: int) -> None:
         "/feed – treat your channel as a release feed\n"
         "/import – paste a name+link list to index it manually\n"
         "/catalog &lt;@channel&gt; – build the catalog from an index channel\n"
-        "/quality &lt;id&gt; &lt;quality&gt; &lt;link&gt; – add a download link\n\n"
+        "/quality &lt;id&gt; &lt;quality&gt; &lt;link&gt; – add a download link\n"
+        "/ongoing – manage the Ongoing rail (send an <i>ongoing anime</i> list)\n"
+        "/enrich – fetch missing posters now\n\n"
         "<b>Adding episodes</b>\n"
         "Send the bot a message in this format and the episodes are attached to "
         "the matching title:\n"

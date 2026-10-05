@@ -11,6 +11,7 @@ from ..models import (
     AnimeEntry,
     Channel,
     EntryChannel,
+    EntryView,
     Post,
     QualityLink,
     Season,
@@ -29,6 +30,18 @@ DEFAULT_QUALITIES = ["480p", "720p", "1080p", "HD-RIP"]
 DEFAULT_SUBTITLES = "English Sub"
 
 
+def _entry_loaders():
+    """Eager-load everything an entry card needs (fresh option objects per query)."""
+    return (
+        selectinload(AnimeEntry.anime),
+        selectinload(AnimeEntry.qualities),
+        selectinload(AnimeEntry.channels),
+        selectinload(AnimeEntry.ongoing),
+        selectinload(AnimeEntry.stats),
+        selectinload(AnimeEntry.seasons).selectinload(Season.episodes),
+    )
+
+
 def _split_tags(value: str | None) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
 
@@ -36,8 +49,17 @@ def _split_tags(value: str | None) -> list[str]:
 def _entry_card(entry: AnimeEntry) -> dict:
     """A catalog row: metadata plus the channels users tap to reach the files."""
     anime = entry.anime
-    links = entry.channels or []
-    primary = links[0] if links else None
+    channels = [
+        {"source": link.source_chat, "url": link.url, "kind": link.kind}
+        for link in (entry.channels or [])
+        if link.url
+    ]
+    ongoing = entry.ongoing
+    if ongoing is not None and ongoing.url:
+        # The ongoing channel is where new episodes land, so it comes first.
+        channels = [c for c in channels if c["url"] != ongoing.url]
+        channels.insert(0, {"source": "Ongoing channel", "url": ongoing.url, "kind": ongoing.kind})
+    primary = channels[0] if channels else None
     seasons = entry_seasons(entry)
     episode_count = sum(len(s["episodes"]) for s in seasons)
     return {
@@ -57,12 +79,13 @@ def _entry_card(entry: AnimeEntry) -> dict:
         "year": anime.year if anime else None,
         "anime_id": entry.anime_id,
         # The first channel, kept for older clients, plus the full list.
-        "channel_link": (primary.url if primary else entry.channel_link),
-        "channel_kind": (primary.kind if primary else entry.channel_kind),
-        "channel_count": len(links),
-        "channels": [
-            {"source": link.source_chat, "url": link.url, "kind": link.kind} for link in links
-        ],
+        "channel_link": (primary["url"] if primary else entry.channel_link),
+        "channel_kind": (primary["kind"] if primary else entry.channel_kind),
+        "channel_count": len(channels),
+        "channels": channels,
+        "ongoing": ongoing is not None,
+        "ongoing_position": ongoing.position if ongoing is not None else None,
+        "views": entry.stats.views if entry.stats is not None else 0,
         "quality_count": len(entry.qualities),
         "qualities": [_quality_card(q) for q in entry.qualities],
         # Manual release details. The fixed quality/subtitle set is always shown.
@@ -172,6 +195,12 @@ def _catalog_order(sort: str):
         return (func.coalesce(Anime.score, 0).desc(), title.asc())
     if sort == "year":
         return (func.coalesce(Anime.year, 0).desc(), title.asc())
+    if sort == "popular":
+        return (
+            func.coalesce(EntryView.views, 0).desc(),
+            func.coalesce(Anime.score, 0).desc(),
+            title.asc(),
+        )
     if sort == "recent":
         return (AnimeEntry.id.desc(),)
     if sort == "episodes":
@@ -183,7 +212,7 @@ def _catalog_order(sort: str):
 def catalog(
     q: str | None = Query(None, description="Search anime names"),
     genre: str | None = None,
-    sort: str = Query("title", pattern="^(title|score|year|recent|episodes)$"),
+    sort: str = Query("title", pattern="^(title|score|year|recent|episodes|popular)$"),
     limit: int = Query(120, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_session),
@@ -191,13 +220,9 @@ def catalog(
     """The curated catalog: every anime listed by an index channel."""
     stmt = (
         select(AnimeEntry)
-        .options(
-            selectinload(AnimeEntry.anime),
-            selectinload(AnimeEntry.qualities),
-            selectinload(AnimeEntry.channels),
-            selectinload(AnimeEntry.seasons).selectinload(Season.episodes),
-        )
+        .options(*_entry_loaders())
         .outerjoin(Anime, AnimeEntry.anime_id == Anime.id)
+        .outerjoin(EntryView, EntryView.entry_id == AnimeEntry.id)
         .order_by(*_catalog_order(sort))
     )
     if q:
@@ -219,13 +244,9 @@ def catalog(
 def _catalog_query(sort: str):
     return (
         select(AnimeEntry)
-        .options(
-            selectinload(AnimeEntry.anime),
-            selectinload(AnimeEntry.qualities),
-            selectinload(AnimeEntry.channels),
-            selectinload(AnimeEntry.seasons).selectinload(Season.episodes),
-        )
+        .options(*_entry_loaders())
         .outerjoin(Anime, AnimeEntry.anime_id == Anime.id)
+        .outerjoin(EntryView, EntryView.entry_id == AnimeEntry.id)
         .order_by(*_catalog_order(sort))
     )
 
@@ -235,7 +256,7 @@ def sections(
     limit: int = Query(14, ge=1, le=40),
     db: Session = Depends(get_session),
 ):
-    """Home rails: a featured hero, most popular, and currently airing titles."""
+    """Home rails: a featured hero, most popular, ongoing, and latest titles."""
     rows = db.scalars(_catalog_query("title")).all()
     cards = [_entry_card(r) for r in rows]
     if not cards:
@@ -244,25 +265,25 @@ def sections(
     scored = [c for c in cards if c.get("score")]
     featured = max(scored, key=lambda c: c["score"]) if scored else cards[0]
 
+    # Most popular = most opened in the Mini App; ties (and a fresh install with
+    # no views yet) fall back to the AniList score, then the newest year.
     popular = sorted(
-        scored or cards,
-        key=lambda c: (c.get("score") or 0, c.get("year") or 0),
+        cards,
+        key=lambda c: (c.get("views") or 0, c.get("score") or 0, c.get("year") or 0),
         reverse=True,
     )[:limit]
 
-    airing = ("airing", "releasing", "ongoing", "currently airing")
-    ongoing = [c for c in cards if (c.get("status") or "").lower() in airing]
-    if len(ongoing) < limit:
-        # Pad with the newest titles so the rail is never sparse.
-        seen = {c["id"] for c in ongoing}
-        recent = sorted(
-            (c for c in cards if c["id"] not in seen),
-            key=lambda c: (c.get("year") or 0),
-            reverse=True,
-        )
-        ongoing = (ongoing + recent)[:limit]
-    else:
-        ongoing = ongoing[:limit]
+    # Ongoing = the list the owner maintains with /ongoing, in the order given.
+    # Only when that list is empty do we fall back to titles AniList reports as
+    # currently airing - never padded with unrelated A-Z titles.
+    ongoing = sorted(
+        (c for c in cards if c.get("ongoing")),
+        key=lambda c: c.get("ongoing_position") or 0,
+    )
+    if not ongoing:
+        airing = ("airing", "releasing", "ongoing", "currently airing")
+        ongoing = [c for c in cards if (c.get("status") or "").lower() in airing]
+    ongoing = ongoing[:limit]
 
     latest = sorted(cards, key=lambda c: c["id"], reverse=True)[:limit]
     return {
@@ -273,18 +294,22 @@ def sections(
     }
 
 
+@router.post("/entry/{entry_id}/view")
+def entry_view(entry_id: int, db: Session = Depends(get_session)):
+    """Count one open of a title; this is what ranks the Most Popular rail."""
+    from ..services.catalog import record_view
+
+    views = record_view(db, entry_id)
+    if views is None:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return {"views": views}
+
+
 @router.get("/entry/{entry_id}")
 def entry_detail(entry_id: int, db: Session = Depends(get_session)):
     """Full detail for one catalog entry, including seasons, episodes and links."""
     entry = db.scalar(
-        select(AnimeEntry)
-        .options(
-            selectinload(AnimeEntry.anime),
-            selectinload(AnimeEntry.qualities),
-            selectinload(AnimeEntry.channels),
-            selectinload(AnimeEntry.seasons).selectinload(Season.episodes),
-        )
-        .where(AnimeEntry.id == entry_id)
+        select(AnimeEntry).options(*_entry_loaders()).where(AnimeEntry.id == entry_id)
     )
     if entry is None:
         raise HTTPException(status_code=404, detail="Entry not found")
