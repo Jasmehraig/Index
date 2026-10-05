@@ -42,6 +42,8 @@ async def lifespan(app: FastAPI):
                     {"command": "start", "description": "Open the anime index"},
                     {"command": "catalog", "description": "Build catalog from an index channel"},
                     {"command": "episodes", "description": "Add seasons and episodes to a title"},
+                    {"command": "ongoing", "description": "Set the Ongoing anime list"},
+                    {"command": "enrich", "description": "Fetch missing posters now"},
                     {"command": "channels", "description": "List indexed channels"},
                     {"command": "quality", "description": "Add a download link to a title"},
                     {"command": "refresh", "description": "Re-scan channel feeds"},
@@ -54,6 +56,10 @@ async def lifespan(app: FastAPI):
         log.warning("BOT_TOKEN not set; running in API-only mode")
 
     start_scheduler()
+    # Resume any unfinished poster/metadata pass after every (re)start.
+    from .services import catalog as catalog_service
+
+    catalog_service.schedule_enrichment()
     try:
         yield
     finally:

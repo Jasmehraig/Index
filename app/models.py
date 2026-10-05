@@ -157,6 +157,49 @@ class AnimeEntry(Base):
     seasons: Mapped[list["Season"]] = relationship(
         back_populates="entry", cascade="all, delete-orphan", order_by="Season.number"
     )
+    # Set when the owner lists this title as currently airing (/ongoing).
+    ongoing: Mapped["OngoingEntry | None"] = relationship(
+        back_populates="entry", cascade="all, delete-orphan", uselist=False
+    )
+    # How many times the title was opened in the Mini App (drives "Most Popular").
+    stats: Mapped["EntryView | None"] = relationship(
+        back_populates="entry", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class OngoingEntry(Base):
+    """A title the owner marked as currently airing, with its own channel link.
+
+    Kept in its own table (not a column on ``anime_entries``) so Postgres picks it
+    up through ``create_all`` without a manual ALTER TABLE.
+    """
+
+    __tablename__ = "ongoing_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("anime_entries.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+    entry: Mapped["AnimeEntry"] = relationship(back_populates="ongoing")
+
+
+class EntryView(Base):
+    """Open counter for a catalog entry, used to rank the Most Popular rail."""
+
+    __tablename__ = "entry_views"
+
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("anime_entries.id", ondelete="CASCADE"), primary_key=True
+    )
+    views: Mapped[int] = mapped_column(Integer, default=0)
+    last_viewed: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    entry: Mapped["AnimeEntry"] = relationship(back_populates="stats")
 
 
 class Season(Base):

@@ -1,3 +1,4 @@
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -12,10 +13,12 @@ class Settings(BaseSettings):
         env_file=str(BASE_DIR / ".env"), env_file_encoding="utf-8", extra="ignore"
     )
 
-    bot_token: str = "8639089032:AAGiFCtR_zgC5dDxswvYWvOcc23a2r0UNIc"
+    bot_token: str = ""
     public_base_url: str = "http://localhost:8000"
     webhook_secret: str = ""
-    DATABASE_URL: str = "postgresql://neondb_owner:npg_D6EWrOTeM8wh@ep-mute-recipe-b4o6rgos-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require"
+    # Set DATABASE_URL in the environment (Render/Neon). Falls back to a local
+    # SQLite file for development only.
+    DATABASE_URL: str = "sqlite:///./data/index.db"
     poll_interval_minutes: int = 15
     jikan_base_url: str = "https://api.jikan.moe/v4"
     anilist_url: str = "https://graphql.anilist.co"
@@ -38,14 +41,33 @@ class Settings(BaseSettings):
     # File-share bot username used to resolve file links, if any.
     file_share_bot: str = ""
 
+    @staticmethod
+    def _clean_ref(part: str) -> str:
+        """'https://t.me/Foo', '@Foo' and 'Foo' all become 'Foo'."""
+        part = re.sub(r"^https?://(?:t|telegram)\.me/(?:s/)?", "", part.strip(), flags=re.I)
+        return part.strip("/@ ")
+
     @property
     def index_channel_refs(self) -> set[str]:
-        return {part.strip().lower() for part in self.index_channels.split(",") if part.strip()}
+        return {
+            ref.lower()
+            for ref in (self._clean_ref(p) for p in self.index_channels.split(","))
+            if ref
+        }
 
     @property
     def index_channel_usernames(self) -> list[str]:
-        """Public channel usernames we can read via t.me/s."""
-        return sorted({r.lstrip("@") for r in self.index_channel_refs if not r.lstrip("-").isdigit()})
+        """Public channel usernames we can read via t.me/s (original casing kept).
+
+        The preview page tags posts as ``data-post="Name/123"`` with the channel's
+        real casing, so a lower-cased name would stop paging after the first page.
+        """
+        names: dict[str, str] = {}
+        for part in self.index_channels.split(","):
+            ref = self._clean_ref(part)
+            if ref and not ref.lstrip("-").isdigit():
+                names.setdefault(ref.lower(), ref)
+        return sorted(names.values(), key=str.lower)
 
     @field_validator("announce_chat_id", mode="before")
     @classmethod
