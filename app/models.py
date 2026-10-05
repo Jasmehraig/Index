@@ -271,7 +271,7 @@ def _as_psycopg_url(url: str) -> str:
 
 def init_db(database_url: str | None = None):
     global _engine, _SessionLocal
-    url = database_url or get_settings().database_url
+    url = database_url or get_settings().DATABASE_URL
     if url.startswith("sqlite"):
         if url.startswith("sqlite:///"):
             path = url.replace("sqlite:///", "", 1)
