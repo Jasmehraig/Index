@@ -9,12 +9,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
+from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
-from ..models import Anime, AnimeEntry, EntryChannel, Episode, QualityLink, Season
+from ..models import (
+    Anime,
+    AnimeEntry,
+    EntryChannel,
+    EntryView,
+    Episode,
+    OngoingEntry,
+    QualityLink,
+    Season,
+)
 from . import metadata, telegram_web
 
 log = logging.getLogger("index.catalog")
@@ -291,58 +302,112 @@ def backfill_match_keys(db: Session) -> int:
     return changed
 
 
+# Titles AniList/Jikan could not match are not retried for a while, so a few
+# unsearchable names cannot eat the rate limit on every pass.
+_MISS_RETRY_SECONDS = 6 * 3600
+_missed: dict[int, float] = {}
+_enrich_lock = asyncio.Lock()
+_background_tasks: set[asyncio.Task] = set()
+
+
 async def enrich_pending(db: Session, limit: int | None = None, workers: int = 6) -> dict:
-    """Fill in AniList metadata for catalog rows that have none yet.
+    """Fill in AniList metadata (poster, score, status...) for rows that lack it.
 
     AniList enforces a global request spacing, so this is deliberately a
     background pass: rows are committed in batches and the UI shows whatever is
-    already enriched.
+    already enriched. It is resumable - an interrupted pass (Render free tier
+    sleeping) simply continues on the next one.
     """
+    now = time.monotonic()
     stmt = (
         select(AnimeEntry)
         .options(selectinload(AnimeEntry.anime))
         .order_by(AnimeEntry.id.asc())
     )
-    rows = [r for r in db.scalars(stmt).all() if _needs_enrichment(r)]
+    pending = [
+        (r.id, r.raw_name)
+        for r in db.scalars(stmt).all()
+        if _needs_enrichment(r) and _missed.get(r.id, 0) <= now
+    ]
     if limit is not None:
-        rows = rows[:limit]
-    if not rows:
-        return {"enriched": 0, "remaining": 0}
+        pending = pending[:limit]
+    # End the read transaction before the slow network calls below.
+    db.commit()
+    if not pending:
+        return {"enriched": 0, "missed": 0, "remaining": 0}
 
     semaphore = asyncio.Semaphore(workers)
 
-    async def fetch(row: AnimeEntry) -> tuple[int, dict | None]:
-        # Network only: SQLite takes a write lock the moment the session has
-        # pending changes, so it must not be held across an await. The timeout
+    async def fetch(row_id: int, name: str) -> tuple[int, dict | None]:
+        # Network only: never hold a write lock across an await. The timeout
         # stops one unsearchable title from stalling the whole batch.
         async with semaphore:
             try:
-                meta = await asyncio.wait_for(metadata.search_anime(row.raw_name), timeout=20)
+                meta = await asyncio.wait_for(metadata.search_anime(name), timeout=30)
             except Exception:  # noqa: BLE001 - an unsearchable title is not fatal
                 meta = None
-            return row.id, meta
+            return row_id, meta
 
-    for start in range(0, len(rows), 25):
-        batch = rows[start : start + 25]
-        for row_id, meta in await asyncio.gather(*(fetch(r) for r in batch)):
+    hits = misses = 0
+    for start in range(0, len(pending), 25):
+        batch = pending[start : start + 25]
+        for row_id, meta in await asyncio.gather(*(fetch(i, n) for i, n in batch)):
             row = db.get(AnimeEntry, row_id)
             if row is None:
                 continue
             if meta is None:
-                # A miss is often transient (rate limit, hiccup). Keep the
-                # placeholder row but leave it pending so the next pass retries.
+                misses += 1
+                _missed[row_id] = time.monotonic() + _MISS_RETRY_SECONDS
+                # Keep a placeholder so the row has an Anime to hang details on.
                 if row.anime_id is None:
                     anime = Anime(title=row.raw_name, source="index")
                     db.add(anime)
                     db.flush()
                     row.anime_id = anime.id
             else:
+                hits += 1
+                _missed.pop(row_id, None)
                 anime = _upsert_anime(db, meta, row.raw_name)
                 row.anime_id = anime.id
         db.commit()
 
-    log.info("Enriched %d catalog entr(y/ies)", len(rows))
-    return {"enriched": len(rows), "remaining": 0}
+    log.info("Enrichment pass: %d matched, %d without a match", hits, misses)
+    return {"enriched": hits, "missed": misses, "remaining": misses}
+
+
+async def run_enrichment() -> dict | None:
+    """One enrichment pass on its own session. Skips if one is already running."""
+    from ..models import session_scope
+
+    if _enrich_lock.locked():
+        return None
+    async with _enrich_lock:
+        db = session_scope()
+        try:
+            return await enrich_pending(db)
+        except Exception as exc:  # noqa: BLE001 - never crash the host task
+            log.warning("Enrichment pass failed: %s", exc)
+            return None
+        finally:
+            db.close()
+
+
+def schedule_enrichment() -> None:
+    """Start an enrichment pass in the background and return immediately."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(run_enrichment())
+    _background_tasks.add(task)  # keep a reference so it is not garbage collected
+    task.add_done_callback(_background_tasks.discard)
+
+
+def count_unenriched(db: Session) -> int:
+    rows = db.scalars(
+        select(AnimeEntry).options(selectinload(AnimeEntry.anime))
+    ).all()
+    return sum(1 for r in rows if _needs_enrichment(r))
 
 
 def _needs_enrichment(row: AnimeEntry) -> bool:
@@ -484,6 +549,17 @@ def _merge_entries(db: Session, keeper: AnimeEntry, dup: AnimeEntry) -> None:
         else:
             db.delete(quality)
 
+    if dup.ongoing is not None:
+        if keeper.ongoing is None:
+            dup.ongoing.entry_id = keeper.id
+        else:
+            db.delete(dup.ongoing)
+    if dup.stats is not None:
+        if keeper.stats is None:
+            dup.stats.entry_id = keeper.id
+        else:
+            keeper.stats.views = (keeper.stats.views or 0) + (dup.stats.views or 0)
+            db.delete(dup.stats)
     if keeper.anime_id is None and dup.anime_id is not None:
         keeper.anime_id = dup.anime_id
     if not keeper.note and dup.note:
@@ -497,15 +573,16 @@ def _merge_entries(db: Session, keeper: AnimeEntry, dup: AnimeEntry) -> None:
 
 async def refresh_all(db: Session) -> dict:
     """Re-import every index channel listed in settings."""
-    refs = get_settings().index_channel_refs
+    refs = get_settings().index_channel_usernames
     backfill_match_keys(db)
     total = {"created": 0, "updated": 0, "merged": 0}
-    for ref in sorted(refs):
+    for ref in refs:
         result = await import_from_channel(db, ref)
         total["created"] += result["created"]
         total["updated"] += result["updated"]
         total["merged"] += result.get("merged", 0)
     total["collapsed"] = collapse_duplicates(db)["merged"]
+    schedule_enrichment()
     return total
 
 
@@ -635,3 +712,167 @@ def entry_seasons(entry: AnimeEntry) -> list[dict]:
         )
     return result
 
+
+
+# ---------------------------------------------------------------------------
+# Ongoing (currently airing) titles, managed from the bot
+# ---------------------------------------------------------------------------
+
+ONGOING_SOURCE = "ongoing"
+
+
+def _entry_lookup(db: Session) -> dict[str, AnimeEntry]:
+    """Every way a catalog row can be named, so 'Apothecary Diaries' finds it."""
+    rows = db.scalars(
+        select(AnimeEntry).options(selectinload(AnimeEntry.anime)).order_by(AnimeEntry.id.asc())
+    ).all()
+    lookup: dict[str, AnimeEntry] = {}
+    for row in rows:
+        names = [row.match_key, row.raw_name]
+        if row.anime is not None:
+            names += [row.anime.title_english, row.anime.title]
+        for name in names:
+            key = _key(name or "")
+            if len(key) >= 3:
+                lookup.setdefault(key, row)
+    return lookup
+
+
+def set_ongoing(db: Session, items: list[dict], replace: bool = True) -> dict:
+    """Save the ongoing list. ``items`` are ``{"title", "url"}`` dicts.
+
+    Titles already in the catalog are reused (and keep their poster/metadata);
+    unknown titles become new catalog rows that the enrichment pass fills in.
+    With ``replace`` the previous list is cleared first.
+    """
+    backfill_match_keys(db)
+    if replace:
+        for old in db.scalars(select(OngoingEntry)).all():
+            db.delete(old)
+        db.flush()
+
+    lookup = _entry_lookup(db)
+    next_position = (db.scalar(select(func.max(OngoingEntry.position))) or 0) + 1
+    if replace:
+        next_position = 1
+    next_index = (
+        db.scalar(
+            select(func.max(AnimeEntry.entry_index)).where(AnimeEntry.source_chat == ONGOING_SOURCE)
+        )
+        or 0
+    ) + 1
+
+    created = linked = 0
+    names: list[str] = []
+    for item in items:
+        name = normalize_name(item.get("title", ""))
+        url = (item.get("url") or "").strip()
+        key = _key(name)
+        if not name or not url or not key:
+            continue
+        kind = telegram_web.channel_kind(url)
+
+        entry = lookup.get(key)
+        if entry is None:
+            entry = AnimeEntry(
+                source_chat=ONGOING_SOURCE,
+                entry_index=next_index,
+                raw_name=name,
+                match_key=key,
+                channel_link=url,
+                channel_kind=kind,
+            )
+            db.add(entry)
+            db.flush()
+            lookup[key] = entry
+            next_index += 1
+            created += 1
+        else:
+            linked += 1
+
+        row = db.scalar(select(OngoingEntry).where(OngoingEntry.entry_id == entry.id))
+        if row is None:
+            row = OngoingEntry(entry_id=entry.id, position=next_position)
+            db.add(row)
+        row.url = url
+        row.kind = kind
+        if replace or row.position is None:
+            row.position = next_position
+        next_position += 1
+        names.append(display_title(entry) if entry.anime else name)
+
+    db.commit()
+    schedule_enrichment()
+    log.info("Ongoing list saved: %d new, %d linked to existing", created, linked)
+    return {"created": created, "linked": linked, "total": created + linked, "names": names}
+
+
+def remove_ongoing(db: Session, name: str) -> str | None:
+    """Drop one title from the ongoing list. Returns its display name, or None."""
+    key = _key(name)
+    if len(key) < 3:
+        return None
+    rows = db.scalars(
+        select(OngoingEntry).options(
+            selectinload(OngoingEntry.entry).selectinload(AnimeEntry.anime)
+        )
+    ).all()
+    for row in rows:
+        entry = row.entry
+        keys = {_key(entry.raw_name), entry.match_key or ""}
+        if entry.anime is not None:
+            keys |= {_key(entry.anime.title_english or ""), _key(entry.anime.title or "")}
+        if key in keys:
+            label = display_title(entry)
+            db.delete(row)
+            db.commit()
+            return label
+    return None
+
+
+def clear_ongoing(db: Session) -> int:
+    rows = db.scalars(select(OngoingEntry)).all()
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return len(rows)
+
+
+def list_ongoing(db: Session) -> list[tuple[str, str | None]]:
+    rows = db.scalars(
+        select(OngoingEntry)
+        .options(selectinload(OngoingEntry.entry).selectinload(AnimeEntry.anime))
+        .order_by(OngoingEntry.position.asc(), OngoingEntry.id.asc())
+    ).all()
+    return [(display_title(r.entry), r.url) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Popularity
+# ---------------------------------------------------------------------------
+
+
+def record_view(db: Session, entry_id: int) -> int | None:
+    """Count one open of a catalog entry. Returns the new total, or None."""
+    if db.get(AnimeEntry, entry_id) is None:
+        return None
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Atomic increment first; insert only when the counter row does not exist yet.
+    result = db.execute(
+        update(EntryView)
+        .where(EntryView.entry_id == entry_id)
+        .values(views=EntryView.views + 1, last_viewed=now)
+    )
+    if result.rowcount == 0:
+        try:
+            db.add(EntryView(entry_id=entry_id, views=1, last_viewed=now))
+            db.flush()
+        except Exception:  # noqa: BLE001 - lost an insert race; count on the other row
+            db.rollback()
+            db.execute(
+                update(EntryView)
+                .where(EntryView.entry_id == entry_id)
+                .values(views=EntryView.views + 1, last_viewed=now)
+            )
+    db.commit()
+    return db.scalar(select(EntryView.views).where(EntryView.entry_id == entry_id))

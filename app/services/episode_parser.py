@@ -27,6 +27,9 @@ _SEASON = re.compile(rf"^\s*season{_SEP}(.+?)\s*$", re.I)
 _LANGUAGE = re.compile(rf"^\s*(?:language|audio|lang){_SEP}(.+?)\s*$", re.I)
 _SUBTITLE = re.compile(rf"^\s*(?:subtitle|subtitles|sub|subs){_SEP}(.+?)\s*$", re.I)
 _QUALITY = re.compile(rf"^\s*(?:quality|qualities){_SEP}(.+?)\s*$", re.I)
+# Optional season poster: "Poster - https://...jpg". Matched before the bare-URL
+# fallback so the image link is not mistaken for an episode.
+_POSTER = re.compile(rf"^\s*(?:poster|cover|image|thumbnail|thumb){_SEP}(https?://\S+)\s*$", re.I)
 _EPISODE = re.compile(rf"^\s*(?:episode|ep)\s*(\d+)\s*{_SEP}(https?://\S+)\s*$", re.I)
 _ANY_EPISODE = re.compile(rf"^\s*(?:episode|ep){_SEP}", re.I)
 _URL = re.compile(r"https?://[^\s<>\"')]+")
@@ -68,6 +71,7 @@ def parse_episode_message(text: str | None) -> dict | None:
     def new_season(number: int) -> dict:
         return {
             "number": number,
+            "poster_url": None,
             "audio": [],
             "subtitles": [],
             "quality_tags": [],
@@ -88,6 +92,10 @@ def parse_episode_message(text: str | None) -> dict | None:
         if match := _SEASON.match(line):
             current = new_season(_season_number(match.group(1)))
             seasons.append(current)
+            continue
+        if match := _POSTER.match(line):
+            if current is not None:
+                current["poster_url"] = _trim_url(match.group(1))
             continue
         if match := _LANGUAGE.match(line):
             bucket("audio").extend(_split_list(match.group(1)))

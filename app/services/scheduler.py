@@ -45,6 +45,17 @@ async def refresh_catalog() -> None:
         db.close()
 
 
+async def enrich_catalog() -> None:
+    """Fetch posters/scores for any catalog row that still lacks them.
+
+    The pass is resumable, so a service that sleeps and wakes (Render free tier)
+    simply carries on where it left off.
+    """
+    from . import catalog
+
+    await catalog.run_enrichment()
+
+
 def start_scheduler() -> AsyncIOScheduler | None:
     global _scheduler
     settings = get_settings()
@@ -64,6 +75,14 @@ def start_scheduler() -> AsyncIOScheduler | None:
         "interval",
         minutes=max(settings.poll_interval_minutes, 30),
         id="refresh_catalog",
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        enrich_catalog,
+        "interval",
+        minutes=10,
+        id="enrich_catalog",
         max_instances=1,
         coalesce=True,
     )
