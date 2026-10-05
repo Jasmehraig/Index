@@ -27,9 +27,17 @@ inside the Agent Canvas environment.
 - All SQLAlchemy models live in `app/models.py`; schema is created with
   `Base.metadata.create_all`, so new columns need a manual `ALTER TABLE` on
   existing databases (there is no migration tool). `init_db` calls `_migrate`,
-  which adds the post-`kind`/`url`/`entry_index` columns and
-  `anime_entries.match_key` to older SQLite files. New *tables* (e.g.
-  `entry_channels`) are created by `create_all` and need no migration entry.
+  which adds the post-`kind`/`url`/`entry_index` columns,
+  `anime_entries.match_key`, the `anime_entries` release-detail columns
+  (`audio`, `subtitles`, `quality_tags`, `description`) and `anime.studio` to
+  older SQLite files. New *tables* (`entry_channels`, `seasons`, `episodes`)
+  are created by `create_all` and need no migration entry.
+- Storage is SQLite by default but Postgres is a supported target. Keep new SQL
+  portable: `ilike`/`coalesce`/`func.count` are fine, but nothing SQLite-only
+  (`strftime`, `PRAGMA`, `INSERT OR REPLACE`, `AUTOINCREMENT`) outside the
+  guarded `_migrate` block. `_as_psycopg_url` rewrites a bare
+  `postgresql://`/`postgres://` URL to `postgresql+psycopg://`; the non-SQLite
+  engine sets `pool_pre_ping` + `pool_recycle=300` for serverless databases.
 - Channels have a `kind`: `"feed"` (one anime per post) or `"index"` (posts are
   lists of name+link pairs). Ingestion branches on it in `ingest.ingest_entries`.
   Index entries carry their own `Post.url`; always link via `post.target_link`,
@@ -72,9 +80,38 @@ The Mini App is driven by `AnimeEntry` rows, not `Post` rows:
 - Database-channel files are matched to entries by filename via
   `catalog.match_entry` / `catalog.attach_file` (longest catalog name contained
   in the cleaned filename). Called from `webhook._attach_channel_file`.
-- API: `/api/catalog`, `/api/entry/{id}`, `/api/entry/{id}/quality`,
-  `/api/catalog/refresh`. The Mini App (`static/app.js`) renders cards from
-  `/api/catalog` and the detail page from `/api/entry/{id}`.
+- API: `/api/catalog`, `/api/sections`, `/api/entry/{id}`,
+  `/api/entry/{id}/quality`, `/api/catalog/refresh`. The Mini App
+  (`static/app.js`) renders the hero + rails from `/api/sections` and the grid
+  from `/api/catalog`; the detail page comes from `/api/entry/{id}`.
+
+## Seasons and episodes
+
+Owners add episodes by sending the bot one plain-text message per title:
+
+```
+Anime name - Demon Slayer
+Season - Season 01
+Language - English, Japanese
+Subtitle - English Sub
+Quality - 480p, 720p, 1080p, HD-RIP
+Episode 1 - https://t.me/FileBot?start=a1
+```
+
+- `services/episode_parser.py` parses it. Fields are **season-scoped**: a
+  `Language`/`Subtitle`/`Quality` line after a `Season -` line belongs to that
+  season; lines before any season become defaults. Do not re-introduce
+  message-wide fields that leak one season's subtitles onto another.
+- `webhook._handle_message` treats any non-command message that
+  `looks_like_episode_message` as episode input; `/episodes` forces it.
+- `catalog.find_entry` matches the title loosely (match_key → raw name →
+  longest catalog name contained in the query), so "Demon Slayer" finds
+  "Demon Slayer: Kimetsu no Yaiba".
+- `catalog.upsert_episodes` is keyed by (entry, season number) and
+  (season, episode number), so re-sending a corrected message updates links in
+  place. `catalog.entry_seasons` shapes the payload the Mini App reads.
+- Defaults the UI always shows even with no episode data: `480p · 720p · 1080p ·
+  HD-RIP` and `English Sub` (see `api.DEFAULT_QUALITIES` / `DEFAULT_SUBTITLES`).
 
 ## Multi-channel dedup and English titles
 

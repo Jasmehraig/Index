@@ -104,7 +104,35 @@ validated with Telegram `initData` when auth is enabled.
 | `/rss <url>` | Set a custom RSS feed for the channel |
 | `/refresh` | Re-scan feeds and index channels now |
 | `/quality <id> <quality> <url>` | Attach a manual download link to a catalog entry |
+| `/episodes` | Attach seasons and episodes to a title (see below) |
 | `/status` | Show indexing stats |
+
+### Adding episodes
+
+Send the bot one plain-text message per title (no command needed — a message in
+this shape is detected automatically, or prefix it with `/episodes`):
+
+```
+Anime name - Demon Slayer
+Season - Season 01
+Language - English, Japanese
+Subtitle - English Sub
+Quality - 480p, 720p, 1080p, HD-RIP
+Episode 1 - https://t.me/FileBot?start=a1
+Episode 2 - https://t.me/FileBot?start=a2
+
+Anime name - Demon Slayer
+Season - Season 02
+Language - Japanese
+Episode 1 - https://t.me/FileBot?start=b1
+```
+
+The title is matched loosely against the catalog (so "Demon Slayer" finds
+"Demon Slayer: Kimetsu no Yaiba"), and every season and episode is stored with
+its own poster slot, audio, subtitles, quality tags and download link. Re-sending
+a corrected message updates the links in place instead of duplicating them.
+Every title shows **480p · 720p · 1080p · HD-RIP** and **English Sub** by default
+until an owner overrides them.
 
 ## Where the data is stored
 
@@ -120,19 +148,38 @@ Tables:
 | `anime` | Enriched metadata — titles (English/romaji/Japanese), poster, banner, genres, episodes, status, score, year, AniList/MAL ids |
 | `channels` | Channels the bot has been added to, their kind (`feed`/`index`), RSS URL, invite link |
 | `posts` | Indexed channel posts, the parsed title, and episode hints |
-| `anime_entries` | **The catalog** — one row per anime listed by an index channel, with a `match_key` used to merge duplicates |
+| `anime_entries` | **The catalog** — one row per anime listed by an index channel, with a `match_key` used to merge duplicates, plus the release details (`audio`, `subtitles`, `quality_tags`) |
 | `entry_channels` | One row per index channel that lists an anime, and the link it points at — this is what gives a card multiple channel buttons |
 | `quality_links` | Download links per entry, tagged with quality (`1080p`, `Batch`, …) and whether they go through a file-share bot |
+| `seasons` | One row per season of an entry, with its own poster, synopsis, audio, subtitles and quality tags |
+| `episodes` | One row per episode of a season, pointing at the bot deep link that serves it |
 
 Because the database is a file, **it needs a persistent disk in production**.
 On a host with an ephemeral filesystem the index is wiped on every deploy and
 rebuilt from RSS on the next poll — fine for a demo, but mount a volume for
 anything durable.
 
-SQLite is the supported default. `DATABASE_URL` accepts any SQLAlchemy URL, so
-Postgres is possible, but it needs the driver added to `requirements.txt`
-(`psycopg[binary]`) and the lightweight column migrations in `models.py` are
-SQLite-only — they are skipped on other dialects.
+### SQLite or Postgres
+
+SQLite is the default and needs no setup. For always-on hosting, point
+`DATABASE_URL` at a managed Postgres (Neon, Supabase, Railway) so the index
+survives restarts and redeploys:
+
+```bash
+DATABASE_URL=postgresql://user:pass@ep-xxx-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require
+```
+
+- The `psycopg` driver is already in `requirements.txt`.
+- A bare `postgresql://` URL is switched to the `psycopg` driver automatically,
+  and `postgres://` is accepted too.
+- The engine uses `pool_pre_ping` and recycles connections every 5 minutes, so
+  a serverless database that suspends when idle reconnects cleanly.
+- Tables are created on startup. The incremental column migrations in
+  `models.py` are SQLite-only; they are skipped on Postgres, where a fresh
+  database is created in its final shape anyway.
+
+Neon note: use the **pooled** host (the one with `-pooler` in it) for the app.
+Its PgBouncer layer is compatible with the driver's prepared statements.
 
 The Mini App's static files (`index.html`, `styles.css`, `app.js`) are served
 from `app/static/` and bundled into the image; they carry no state.
@@ -297,6 +344,7 @@ Without `BOT_TOKEN` the app runs in API-only mode so you can develop the UI.
 | `/import <lines>` | Index a pasted list of name+link lines |
 | `/catalog [@chan]` | Build the catalog from a public index channel |
 | `/quality <id> <quality> <link>` | Add a download link to a catalog entry |
+| `/episodes` | Attach seasons and episodes to a title |
 | `/help` | Show help |
 
 ## API
@@ -304,8 +352,9 @@ Without `BOT_TOKEN` the app runs in API-only mode so you can develop the UI.
 | Endpoint | Description |
 | --- | --- |
 | `GET /api/home?q=&genre=&limit=&offset=` | Search/browse anime |
-| `GET /api/catalog?q=&genre=&limit=&offset=` | Browse the index-channel catalog |
-| `GET /api/entry/{id}` | Catalog entry: metadata, `channels[]` (one per index channel), quality links |
+| `GET /api/catalog?q=&genre=&sort=&limit=&offset=` | Browse the index-channel catalog (`sort`: `title`, `score`, `year`, `episodes`, `recent`) |
+| `GET /api/sections?limit=` | Home rails: a featured `hero`, `popular`, `ongoing` and `latest` |
+| `GET /api/entry/{id}` | Catalog entry: metadata, `channels[]`, `seasons[]` (with episodes), quality links, `recommendations[]` |
 | `GET /api/genres` | Genre facets with counts |
 | `GET /api/anime/{id}` | Anime detail with all channel posts |
 | `GET /api/channels` | Indexed channels |
@@ -384,7 +433,7 @@ For a named, stable Cloudflare URL on your own domain, use a *named* tunnel
 | --- | --- | --- | --- |
 | **Fly.io** | Free allowance | ✅ volumes | Best fit — the app needs a persistent volume for SQLite. |
 | **Railway** | Trial credit, then paid | ✅ volumes | `railway.toml` included. Add a volume at `/app/data`. |
-| **Render** | Free web service | ❌ (disk is paid) | `render.yaml` included. DB resets on redeploy unless you add a disk. |
+| **Render** | Free web service + free Postgres | ✅ via Postgres | `render.yaml` included (web service + database). See the walkthrough below. |
 | **Koyeb** | Free tier | ❌ | Docker-based; `Dockerfile` included. |
 | **Hugging Face Spaces** | Free | ❌ | Docker SDK works; ephemeral storage. |
 
@@ -400,6 +449,61 @@ docker compose up --build
 ```
 
 SQLite is stored on the `index-data` volume so it survives restarts.
+
+### Render (free web service + free Postgres)
+
+Render runs the app as an always-on web service and gives you a stable
+`https://<name>.onrender.com` URL, which is exactly what the Telegram webhook and
+Mini App need. The included `render.yaml` is a **Blueprint** that provisions both
+the service and a managed Postgres, so the catalog survives restarts and deploys.
+
+1. **Push the repo to GitHub.** Render deploys from a branch, so the code (with
+   `render.yaml`) must be on the remote. The app currently lives on
+   `feat/anime-index-miniapp`.
+
+2. **Create the Blueprint.** In the Render dashboard: **New → Blueprint**, connect
+   the `Monstar0X/Index` repo, and pick the branch. Render reads `render.yaml` and
+   shows a web service (`index-miniapp`) plus a database (`index-db`).
+
+3. **Fill the two secret env vars** when prompted (they are marked `sync: false`,
+   so Render asks for them at deploy time):
+   - `BOT_TOKEN` — the token from @BotFather.
+   - `PUBLIC_BASE_URL` — the service URL Render will assign, e.g.
+     `https://index-miniapp.onrender.com`. If you do not know it yet, deploy
+     once, copy the URL from the service page, then set it and redeploy.
+   - `WEBHOOK_SECRET` and `DATABASE_URL` are filled automatically.
+
+4. **Deploy.** Render installs `requirements.txt` and starts
+   `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Wait for the health check
+   on `/health` to go green.
+
+5. **Point Telegram at it.** With `PUBLIC_BASE_URL` set, the app registers the
+   webhook and the Mini App menu button on startup — no manual `setWebhook` call.
+   Confirm with:
+
+   ```bash
+   curl "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"
+   ```
+
+   The `url` should be `https://index-miniapp.onrender.com/telegram/webhook` and
+   `last_error_message` should be absent.
+
+6. **Open the Mini App.** Send `/start` to the bot; the menu button opens the
+   Mini App from the Render URL. Add the bot to your index channels as before.
+
+Notes specific to Render's free tier:
+
+- **Cold starts.** A free web service spins down after ~15 minutes idle; the next
+  request takes ~30–60 s to wake. The background RSS scheduler pauses while it is
+  asleep. For always-on polling, upgrade the service plan.
+- **Free Postgres expires.** Render's free database is deleted 30 days after
+  creation. Move to a paid plan, or set `DATABASE_URL` to Neon/Supabase (paste the
+  pooled connection string — `psycopg` is already in `requirements.txt`).
+- **To use SQLite instead:** delete the `databases:` block from `render.yaml`, set
+  `DATABASE_URL=sqlite:///./data/index.db`, and add a persistent disk mounted at
+  `/app/data`. Disks are a paid feature, so this is only worth it on a paid plan.
+- **Long webhook messages** (a large pasted episode list) are fine; Telegram
+  retries if a cold start makes the first attempt time out.
 
 ### Fly.io example
 
