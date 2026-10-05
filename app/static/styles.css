@@ -345,6 +345,7 @@ body::before {
   font-size: 26px; color: var(--muted); background: linear-gradient(135deg, #1b1f2e, #2a2f42); }
 .season-tag { font-size: 11.5px; font-weight: 600; color: var(--muted); text-align: center; }
 .season-poster.active .season-tag { color: var(--text); }
+.season-sub { font-size: 10.5px; color: var(--muted); text-align: center; margin-top: -4px; }
 
 /* ---------- Release details ---------- */
 .release-details {

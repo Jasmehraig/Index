@@ -57,7 +57,7 @@
 
   const posterImg = (url, title) =>
     url
-      ? `<img loading="lazy" src="${escapeHtml(url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'fallback',textContent:'${initial(title)}'}))" />`
+      ? `<img loading="lazy" referrerpolicy="no-referrer" src="${escapeHtml(url)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'fallback',textContent:'${initial(title)}'}))" />`
       : fallbackDiv(title);
 
   const toast = (msg) => {
@@ -279,7 +279,8 @@
     return list.map((ch) => {
       const kind = ch.kind ? kindInfo(ch.kind) : null;
       const label = kind ? kind.label : "Open link";
-      const title = multi && ch.source ? ch.source : label;
+      const title = ch.source === "Ongoing channel" ? "Ongoing channel"
+        : (multi && ch.source ? ch.source : label);
       return `
         <button class="channel-btn kind-${escapeHtml(ch.kind || "external")}" data-link="${escapeHtml(ch.url)}">
           <span class="ch-icon">${kind ? kind.icon : "🔗"}</span>
@@ -296,13 +297,16 @@
     const pills = [];
     if (full.score) pills.push(`<span class="pill gold">★ ${Number(full.score).toFixed(1)}</span>`);
     if (full.year) pills.push(`<span class="pill">${full.year}</span>`);
-    if (full.status) pills.push(`<span class="pill ${statusClass(full.status)}">${escapeHtml(full.status)}</span>`);
+    if (full.ongoing) pills.push(`<span class="pill airing">Ongoing</span>`);
+    else if (full.status) pills.push(`<span class="pill ${statusClass(full.status)}">${escapeHtml(full.status)}</span>`);
     if (full.episodes) pills.push(`<span class="pill">${full.episodes} EP</span>`);
     return pills.join("");
   }
 
   function seasonPosterStrip(seasons) {
-    if (!seasons || seasons.length < 2) return "";
+    // Shown for every title that has seasons - even a single one - so the poster
+    // always carries its season list.
+    if (!seasons || !seasons.length) return "";
     return `
       <p class="section-label">Seasons</p>
       <div class="season-strip">
@@ -310,6 +314,7 @@
           <button class="season-poster ${i === 0 ? "active" : ""}" data-season="${s.number}">
             <div class="season-img">${posterImg(s.poster_url, "S" + s.number)}</div>
             <span class="season-tag">Season ${String(s.number).padStart(2, "0")}</span>
+            <span class="season-sub">${(s.episodes || []).length} ep</span>
           </button>`).join("")}
       </div>`;
   }
@@ -360,14 +365,17 @@
 
     let full = item;
     try { full = await api("/api/entry/" + item.id); } catch (e) { /* fall back to card data */ }
+    // Count the open: this is what ranks the Most Popular rail.
+    fetch("/api/entry/" + item.id + "/view", { method: "POST" }).catch(() => {});
 
     const title = full.title || full.raw_name;
     const bg = (full.banner_url || full.poster_url)
       ? `style="background-image:url('${escapeHtml(full.banner_url || full.poster_url)}')"`
       : "";
     const genres = (full.genres || "").split(",").map((g) => g.trim()).filter(Boolean);
-    const seasons = (full.seasons && full.seasons.length)
-      ? full.seasons
+    const realSeasons = (full.seasons && full.seasons.length) ? full.seasons : [];
+    const seasons = realSeasons.length
+      ? realSeasons
       : [{
           number: 1, episodes: [], audio: full.audio, subtitles: full.subtitles,
           quality_tags: full.quality_tags, poster_url: full.poster_url,
@@ -397,7 +405,7 @@
         <p class="section-label">Channel</p>
         ${channelButtons(full)}
 
-        ${seasonPosterStrip(seasons)}
+        ${seasonPosterStrip(realSeasons)}
         <div id="seasonView"></div>
 
         <p class="section-label">Quality &amp; downloads</p>
@@ -532,6 +540,20 @@
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDetail(); });
 
+  /* ------------------------------ Poster auto-refresh ------------------------------ */
+  // The server fetches posters in the background after an import (and after a
+  // Render cold start), so re-check a few times while many titles lack one.
+  let refreshTries = 0;
+  function refreshWhilePostersLoad() {
+    const missing = state.items.filter((i) => !i.poster_url).length;
+    if (!state.items.length || missing / state.items.length < 0.1 || refreshTries >= 8) return;
+    refreshTries += 1;
+    setTimeout(async () => {
+      await Promise.all([loadSections(), load()]);
+      refreshWhilePostersLoad();
+    }, 20000);
+  }
+
   /* ------------------------------ Boot ------------------------------ */
   (async () => {
     try {
@@ -541,5 +563,6 @@
     } catch (e) {}
     renderLetters();
     await Promise.all([loadSections(), load()]);
+    refreshWhilePostersLoad();
   })();
 })();
