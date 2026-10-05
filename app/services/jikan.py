@@ -83,6 +83,7 @@ def normalize(item: dict) -> dict:
     for theme in item.get("themes") or []:
         if theme.get("name"):
             genres.append(theme["name"])
+    studios = [s.get("name") for s in (item.get("studios") or []) if s.get("name")]
     year = None
     aired = (item.get("aired") or {}).get("prop", {}).get("from", {})
     if aired.get("year"):
@@ -100,6 +101,7 @@ def normalize(item: dict) -> dict:
         "poster_url": _pick_image(item.get("images") or {}, "jpg") or _pick_image(item.get("images") or {}, "webp"),
         "banner_url": None,
         "genres": ", ".join(dict.fromkeys(genres)) or None,
+        "studio": ", ".join(dict.fromkeys(studios)) or None,
         "episodes": item.get("episodes"),
         "status": item.get("status"),
         "score": item.get("score"),

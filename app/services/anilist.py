@@ -35,6 +35,7 @@ query ($search: String) {
       status
       averageScore
       startDate { year }
+      studios(isMain: true) { nodes { name } }
     }
   }
 }
@@ -54,6 +55,7 @@ def normalize(media: dict) -> dict:
     description = media.get("description") or ""
     cover = media.get("coverImage") or {}
     score = media.get("averageScore")
+    studios = ((media.get("studios") or {}).get("nodes")) or []
     return {
         "source": "anilist",
         "external_id": media.get("id"),
@@ -65,6 +67,7 @@ def normalize(media: dict) -> dict:
         "poster_url": cover.get("extraLarge") or cover.get("large"),
         "banner_url": media.get("bannerImage"),
         "genres": ", ".join(media.get("genres") or []) or None,
+        "studio": ", ".join(s["name"] for s in studios if s.get("name")) or None,
         "episodes": media.get("episodes"),
         "status": _STATUS.get(media.get("status"), media.get("status")),
         "score": round(score / 10, 1) if score else None,

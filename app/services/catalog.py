@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
-from ..models import Anime, AnimeEntry, EntryChannel, QualityLink
+from ..models import Anime, AnimeEntry, EntryChannel, Episode, QualityLink, Season
 from . import metadata, telegram_web
 
 log = logging.getLogger("index.catalog")
@@ -376,6 +376,7 @@ def _upsert_anime(db: Session, meta: dict, fallback_title: str) -> Anime:
     anime.poster_url = meta.get("poster_url")
     anime.banner_url = meta.get("banner_url")
     anime.genres = meta.get("genres")
+    anime.studio = meta.get("studio") or anime.studio
     anime.episodes = meta.get("episodes")
     anime.status = meta.get("status")
     anime.score = meta.get("score")
@@ -506,3 +507,131 @@ async def refresh_all(db: Session) -> dict:
         total["merged"] += result.get("merged", 0)
     total["collapsed"] = collapse_duplicates(db)["merged"]
     return total
+
+
+def find_entry(db: Session, name: str) -> AnimeEntry | None:
+    """Find the catalog row a free-text title refers to.
+
+    Matches on the normalized key first, then on the raw name, then on the
+    longest catalog name contained in the query, so "Demon Slayer" finds
+    "Demon Slayer: Kimetsu no Yaiba".
+    """
+    key = _key(name)
+    if len(key) < 3:
+        return None
+
+    exact = db.scalar(select(AnimeEntry).where(AnimeEntry.match_key == key))
+    if exact is not None:
+        return exact
+
+    for row in db.scalars(select(AnimeEntry)).all():
+        if _key(row.raw_name) == key:
+            return row
+
+    best: AnimeEntry | None = None
+    best_len = 0
+    for row in db.scalars(select(AnimeEntry)).all():
+        row_key = _key(row.raw_name)
+        if len(row_key) >= 3 and row_key in key and len(row_key) > best_len:
+            best, best_len = row, len(row_key)
+    return best
+
+
+def upsert_episodes(db: Session, entry: AnimeEntry, parsed: dict) -> dict:
+    """Attach parsed seasons and episodes to a catalog entry.
+
+    Seasons and episodes are matched by number, so re-sending a corrected
+    message updates the links in place instead of duplicating them.
+    """
+    seasons_added = seasons_updated = episodes_added = episodes_updated = 0
+
+    for season_data in parsed.get("seasons", []):
+        number = int(season_data.get("number") or 1)
+        season = db.scalar(
+            select(Season).where(Season.entry_id == entry.id, Season.number == number)
+        )
+        if season is None:
+            season = Season(entry_id=entry.id, number=number)
+            db.add(season)
+            db.flush()
+            seasons_added += 1
+        else:
+            seasons_updated += 1
+
+        for field in ("audio", "subtitles", "quality_tags", "poster_url", "synopsis"):
+            value = season_data.get(field)
+            if value:
+                setattr(season, field, value)
+        # Entry-level details mirror the first season that carried them, so the
+        # grid and hero can show them without walking the season list.
+        if season_data.get("audio") and not entry.audio:
+            entry.audio = season_data["audio"]
+        if season_data.get("subtitles") and not entry.subtitles:
+            entry.subtitles = season_data["subtitles"]
+        if season_data.get("quality_tags") and not entry.quality_tags:
+            entry.quality_tags = season_data["quality_tags"]
+
+        for episode_data in season_data.get("episodes", []):
+            ep_number = int(episode_data.get("number") or 1)
+            url = episode_data.get("url")
+            if not url:
+                continue
+            episode = db.scalar(
+                select(Episode).where(Episode.season_id == season.id, Episode.number == ep_number)
+            )
+            if episode is None:
+                db.add(
+                    Episode(
+                        season_id=season.id,
+                        number=ep_number,
+                        url=url,
+                        title=episode_data.get("title"),
+                    )
+                )
+                episodes_added += 1
+            else:
+                episode.url = url
+                if episode_data.get("title"):
+                    episode.title = episode_data["title"]
+                episodes_updated += 1
+
+    db.commit()
+    log.info(
+        "Episodes for %s: +%d season(s), %d updated, +%d episode(s), %d updated",
+        entry.raw_name,
+        seasons_added,
+        seasons_updated,
+        episodes_added,
+        episodes_updated,
+    )
+    return {
+        "seasons_added": seasons_added,
+        "seasons_updated": seasons_updated,
+        "episodes_added": episodes_added,
+        "episodes_updated": episodes_updated,
+    }
+
+
+def entry_seasons(entry: AnimeEntry) -> list[dict]:
+    """Seasons with their episodes, ready for the Mini App."""
+    result = []
+    for season in sorted(entry.seasons, key=lambda s: s.number):
+        result.append(
+            {
+                "id": season.id,
+                "number": season.number,
+                "title": season.title or f"Season {season.number:02d}",
+                "poster_url": season.poster_url
+                or (entry.anime.poster_url if entry.anime else None),
+                "synopsis": season.synopsis,
+                "audio": season.audio or entry.audio,
+                "subtitles": season.subtitles or entry.subtitles,
+                "quality_tags": season.quality_tags or entry.quality_tags,
+                "episodes": [
+                    {"id": ep.id, "number": ep.number, "title": ep.title, "url": ep.url}
+                    for ep in sorted(season.episodes, key=lambda e: e.number)
+                ],
+            }
+        )
+    return result
+
