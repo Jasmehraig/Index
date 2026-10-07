@@ -2,86 +2,141 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
-  <title>Anime Swordsmith Index</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Swordsmith Anime | Stream & Explore</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
 </head>
-<body>
-  <div id="app">
-    <header class="topbar">
-      <button id="channelsBtn" class="icon-btn" aria-label="Channels">▦</button>
-      <div class="brand">
-        <span class="brand-mark">▶</span>
-        <span class="brand-name">Anime Swordsmith <em>Index</em></span>
-      </div>
-      <button id="topBtn" class="icon-btn" aria-label="Top">↑</button>
-    </header>
+<body class="theme-dark">
+  <!-- Backdrop Overlay for Mobile Drawer -->
+  <div id="drawer-backdrop" class="drawer-backdrop"></div>
 
-    <div class="search-wrap">
-      <div class="search">
-        <span class="search-icon">⌕</span>
-        <input id="searchInput" type="search" placeholder="Search anime…" autocomplete="off" />
-        <button id="clearBtn" class="clear-btn" hidden>✕</button>
+  <!-- Left Sidebar -->
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand">
+        <span class="brand-icon">⚔️</span>
+        <div class="brand-text">
+          <h2>SWORDSMITH</h2>
+          <span>Anime Catalog</span>
+        </div>
+      </div>
+      <button id="sidebar-close" class="icon-btn close-btn" aria-label="Close menu">&times;</button>
+    </div>
+
+    <!-- Official Channel Card -->
+    <div class="channel-widget">
+      <div class="channel-info">
+        <span class="channel-badge">Official Channel</span>
+        <a href="https://t.me/official_swordsmith" target="_blank" rel="noopener noreferrer" class="channel-link">
+          <span class="tg-icon">✈</span>
+          <span>@official_swordsmith</span>
+        </a>
       </div>
     </div>
 
-    <nav id="genreBar" class="chips"></nav>
+    <!-- Navigation / Categories -->
+    <nav class="sidebar-nav">
+      <div class="nav-section-title">CATEGORIES</div>
+      <ul class="nav-list">
+        <li><button class="nav-item active" data-category="all">🔥 All Releases</button></li>
+        <li><button class="nav-item" data-category="ongoing">⚡ Ongoing Series</button></li>
+        <li><button class="nav-item" data-category="completed">🏆 Completed</button></li>
+        <li><button class="nav-item" data-category="movies">🎬 Movies & OVAs</button></li>
+      </ul>
 
-    <main>
-      <section id="hero" class="hero" hidden></section>
+      <!-- Genres -->
+      <div class="nav-section-title">GENRES</div>
+      <div class="genre-chip-grid" id="genre-container">
+        <button class="genre-chip active" data-genre="all">All</button>
+        <button class="genre-chip" data-genre="Action">Action</button>
+        <button class="genre-chip" data-genre="Adventure">Adventure</button>
+        <button class="genre-chip" data-genre="Comedy">Comedy</button>
+        <button class="genre-chip" data-genre="Drama">Drama</button>
+        <button class="genre-chip" data-genre="Fantasy">Fantasy</button>
+        <button class="genre-chip" data-genre="Isekai">Isekai</button>
+        <button class="genre-chip" data-genre="Romance">Romance</button>
+        <button class="genre-chip" data-genre="Sci-Fi">Sci-Fi</button>
+        <button class="genre-chip" data-genre="Shounen">Shounen</button>
+        <button class="genre-chip" data-genre="Supernatural">Supernatural</button>
+      </div>
+    </nav>
+  </aside>
 
-      <section id="rails">
-        <div class="rail-block" id="popularBlock" hidden>
-          <div class="rail-head">
-            <h2>Most Popular</h2>
-            <span class="rail-hint">swipe ›</span>
+  <!-- Main View Area -->
+  <div class="main-layout">
+    <!-- Top Header -->
+    <header class="topbar">
+      <button id="menu-toggle" class="icon-btn" aria-label="Open menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2">
+          <path d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+
+      <div class="search-wrapper">
+        <input type="text" id="search-input" placeholder="Search anime, movies, genres..." />
+        <span class="search-icon">🔍</span>
+      </div>
+
+      <div class="topbar-actions">
+        <a href="https://t.me/official_swordsmith" target="_blank" rel="noopener noreferrer" class="btn btn-outline">
+          Join Channel
+        </a>
+      </div>
+    </header>
+
+    <main class="content-body">
+      <!-- Top 6 Sliding Hero Banner -->
+      <section class="hero-slider-section">
+        <div class="hero-slider-container" id="hero-slider">
+          <div class="hero-slides-track" id="hero-slides-track">
+            <!-- Dynamically populated top 6 slides -->
           </div>
-          <div class="rail" id="popularRail"></div>
-        </div>
-
-        <div class="rail-block" id="ongoingBlock" hidden>
-          <div class="rail-head">
-            <h2>Ongoing</h2>
-            <span class="rail-hint">swipe ›</span>
+          
+          <div class="hero-controls">
+            <button class="slider-btn prev" id="slider-prev" aria-label="Previous slide">&#10094;</button>
+            <div class="slider-indicators" id="slider-indicators"></div>
+            <button class="slider-btn next" id="slider-next" aria-label="Next slide">&#10095;</button>
           </div>
-          <div class="rail" id="ongoingRail"></div>
         </div>
       </section>
 
-      <div class="section-head">
-        <h2>All Anime</h2>
-        <div class="sort-wrap">
-          <label for="sortSelect">Sort</label>
-          <select id="sortSelect">
-            <option value="title">A – Z</option>
-            <option value="popular">Most popular</option>
-            <option value="score">Top rated</option>
-            <option value="year">Newest</option>
-            <option value="episodes">Most episodes</option>
-            <option value="recent">Recently added</option>
-          </select>
+      <!-- Anime Grid Catalog -->
+      <section class="catalog-section">
+        <div class="catalog-header">
+          <div>
+            <h2 id="catalog-heading" class="section-title">Latest & Trending</h2>
+            <p id="catalog-subheading" class="section-subtitle">Showing all available titles</p>
+          </div>
+          <div class="results-count" id="results-count">0 Titles</div>
         </div>
-      </div>
 
-      <nav id="letterBar" class="chips letters"></nav>
-      <section id="grid" class="grid"></section>
-      <div id="empty" class="empty" hidden>
-        <div class="empty-art">🍿</div>
-        <h2>Nothing indexed yet</h2>
-        <p>Add the bot to an anime channel as an admin and its posts will show up here automatically.</p>
-      </div>
-      <div id="loader" class="loader"><span></span></div>
+        <div class="anime-grid" id="anime-grid">
+          <!-- Cards injected via app.js -->
+        </div>
+
+        <div id="loading-state" class="state-container hidden">
+          <div class="spinner"></div>
+          <p>Loading titles...</p>
+        </div>
+
+        <div id="empty-state" class="state-container hidden">
+          <p>No titles matched your filter.</p>
+        </div>
+      </section>
     </main>
   </div>
 
-  <div id="detail" class="detail" hidden></div>
-  <div id="sheet" class="sheet" hidden></div>
+  <!-- Detail / Stream Modal -->
+  <div id="details-modal" class="modal hidden">
+    <div class="modal-dialog">
+      <button id="modal-close" class="modal-close-btn">&times;</button>
+      <div id="modal-content" class="modal-content"></div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>
 </html>
-
