@@ -1,141 +1,80 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Swordsmith Anime | Stream & Explore</title>
-  <link rel="stylesheet" href="/static/styles.css" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Swordsmith | Anime Index</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
-<body class="theme-dark">
-  <!-- Backdrop Overlay for Mobile Drawer -->
-  <div id="drawer-backdrop" class="drawer-backdrop"></div>
-
-  <!-- Left Sidebar -->
-  <aside id="sidebar" class="sidebar">
-    <div class="sidebar-header">
-      <div class="brand">
-        <span class="brand-icon">⚔️</span>
-        <div class="brand-text">
-          <h2>SWORDSMITH</h2>
-          <span>Anime Catalog</span>
-        </div>
-      </div>
-      <button id="sidebar-close" class="icon-btn close-btn" aria-label="Close menu">&times;</button>
-    </div>
-
-    <!-- Official Channel Card -->
-    <div class="channel-widget">
-      <div class="channel-info">
-        <span class="channel-badge">Official Channel</span>
-        <a href="https://t.me/official_swordsmith" target="_blank" rel="noopener noreferrer" class="channel-link">
-          <span class="tg-icon">✈</span>
-          <span>@official_swordsmith</span>
-        </a>
+<body>
+  <!-- Navigation -->
+  <nav class="navbar">
+    <div class="nav-brand">
+      <span class="logo-icon">⚔️</span>
+      <div class="logo-text">
+        <h1>SWORDSMITH</h1>
+        <span>Official Index</span>
       </div>
     </div>
-
-    <!-- Navigation / Categories -->
-    <nav class="sidebar-nav">
-      <div class="nav-section-title">CATEGORIES</div>
-      <ul class="nav-list">
-        <li><button class="nav-item active" data-category="all">🔥 All Releases</button></li>
-        <li><button class="nav-item" data-category="ongoing">⚡ Ongoing Series</button></li>
-        <li><button class="nav-item" data-category="completed">🏆 Completed</button></li>
-        <li><button class="nav-item" data-category="movies">🎬 Movies & OVAs</button></li>
-      </ul>
-
-      <!-- Genres -->
-      <div class="nav-section-title">GENRES</div>
-      <div class="genre-chip-grid" id="genre-container">
-        <button class="genre-chip active" data-genre="all">All</button>
-        <button class="genre-chip" data-genre="Action">Action</button>
-        <button class="genre-chip" data-genre="Adventure">Adventure</button>
-        <button class="genre-chip" data-genre="Comedy">Comedy</button>
-        <button class="genre-chip" data-genre="Drama">Drama</button>
-        <button class="genre-chip" data-genre="Fantasy">Fantasy</button>
-        <button class="genre-chip" data-genre="Isekai">Isekai</button>
-        <button class="genre-chip" data-genre="Romance">Romance</button>
-        <button class="genre-chip" data-genre="Sci-Fi">Sci-Fi</button>
-        <button class="genre-chip" data-genre="Shounen">Shounen</button>
-        <button class="genre-chip" data-genre="Supernatural">Supernatural</button>
-      </div>
-    </nav>
-  </aside>
-
-  <!-- Main View Area -->
-  <div class="main-layout">
-    <!-- Top Header -->
-    <header class="topbar">
-      <button id="menu-toggle" class="icon-btn" aria-label="Open menu">
-        <svg width="24" height="24" viewBox="0 0 24 24" stroke="currentColor" fill="none" stroke-width="2">
-          <path d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
-
-      <div class="search-wrapper">
-        <input type="text" id="search-input" placeholder="Search anime, movies, genres..." />
-        <span class="search-icon">🔍</span>
-      </div>
-
-      <div class="topbar-actions">
-        <a href="https://t.me/official_swordsmith" target="_blank" rel="noopener noreferrer" class="btn btn-outline">
-          Join Channel
-        </a>
-      </div>
-    </header>
-
-    <main class="content-body">
-      <!-- Top 6 Sliding Hero Banner -->
-      <section class="hero-slider-section">
-        <div class="hero-slider-container" id="hero-slider">
-          <div class="hero-slides-track" id="hero-slides-track">
-            <!-- Dynamically populated top 6 slides -->
-          </div>
-          
-          <div class="hero-controls">
-            <button class="slider-btn prev" id="slider-prev" aria-label="Previous slide">&#10094;</button>
-            <div class="slider-indicators" id="slider-indicators"></div>
-            <button class="slider-btn next" id="slider-next" aria-label="Next slide">&#10095;</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- Anime Grid Catalog -->
-      <section class="catalog-section">
-        <div class="catalog-header">
-          <div>
-            <h2 id="catalog-heading" class="section-title">Latest & Trending</h2>
-            <p id="catalog-subheading" class="section-subtitle">Showing all available titles</p>
-          </div>
-          <div class="results-count" id="results-count">0 Titles</div>
-        </div>
-
-        <div class="anime-grid" id="anime-grid">
-          <!-- Cards injected via app.js -->
-        </div>
-
-        <div id="loading-state" class="state-container hidden">
-          <div class="spinner"></div>
-          <p>Loading titles...</p>
-        </div>
-
-        <div id="empty-state" class="state-container hidden">
-          <p>No titles matched your filter.</p>
-        </div>
-      </section>
-    </main>
-  </div>
-
-  <!-- Detail / Stream Modal -->
-  <div id="details-modal" class="modal hidden">
-    <div class="modal-dialog">
-      <button id="modal-close" class="modal-close-btn">&times;</button>
-      <div id="modal-content" class="modal-content"></div>
+    <div class="nav-links">
+      <a href="#popular">Popular</a>
+      <a href="#ongoing">Ongoing</a>
+      <a href="#catalog">Catalog</a>
+      <a href="https://t.me/official_swordsmith" target="_blank" class="btn-primary">Join Channel</a>
     </div>
-  </div>
+  </nav>
+
+  <!-- 1. Cinematic Hero Banner -->
+  <header class="hero-container" id="hero-section">
+    <!-- Injected via app.js -->
+  </header>
+
+  <main class="main-content">
+    <!-- 2. Most Popular (Horizontal Big Posters) -->
+    <section id="popular" class="rail-section">
+      <div class="section-header">
+        <h2>🔥 Most Popular</h2>
+        <p>Top viewed titles on Swordsmith</p>
+      </div>
+      <div class="horizontal-rail" id="popular-rail">
+        <div class="loading-spinner"></div>
+      </div>
+    </section>
+
+    <!-- 3. Ongoing Anime (Horizontal Big Posters) -->
+    <section id="ongoing" class="rail-section">
+      <div class="section-header">
+        <h2>⚡ Ongoing Series</h2>
+        <p>Currently airing & updating weekly</p>
+      </div>
+      <div class="horizontal-rail" id="ongoing-rail">
+        <div class="loading-spinner"></div>
+      </div>
+    </section>
+
+    <!-- 4. Complete Catalog (Data-Rich Grid) -->
+    <section id="catalog" class="catalog-section">
+      <div class="section-header catalog-header">
+        <div>
+          <h2>📚 Complete Catalog</h2>
+          <p id="catalog-count">Loading titles...</p>
+        </div>
+        <div class="controls">
+          <input type="text" id="search-input" class="search-box" placeholder="Search anime...">
+          <select id="sort-select" class="sort-box">
+            <option value="title">A-Z</option>
+            <option value="recent">Recently Added</option>
+            <option value="score">Highest Rated</option>
+            <option value="episodes">Most Episodes</option>
+          </select>
+        </div>
+      </div>
+      <div class="anime-grid" id="catalog-grid">
+        <div class="loading-spinner"></div>
+      </div>
+    </section>
+  </main>
 
   <script src="/static/app.js"></script>
 </body>
