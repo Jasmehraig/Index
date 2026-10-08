@@ -2,79 +2,115 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Swordsmith | Anime Index</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#08090d">
+  <title>Anime Index — Anime Swordsmith</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
-  <!-- Navigation -->
-  <nav class="navbar">
-    <div class="nav-brand">
-      <span class="logo-icon">⚔️</span>
-      <div class="logo-text">
-        <h1>SWORDSMITH</h1>
-        <span>Official Index</span>
-      </div>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <aside id="sidebar" class="sidebar">
+    <div class="side-brand">
+      <div class="logo">A</div>
+      <div><b>Anime</b><span>Index</span></div>
+      <button id="closeSidebar" class="circle-btn mobile-only">×</button>
     </div>
-    <div class="nav-links">
-      <a href="#popular">Popular</a>
-      <a href="#ongoing">Ongoing</a>
-      <a href="#catalog">Catalog</a>
-      <a href="https://t.me/official_swordsmith" target="_blank" class="btn-primary">Join Channel</a>
+
+    <nav class="side-nav">
+      <button class="nav-item active" data-nav="home"><span>⌂</span><b>Home</b></button>
+      <button class="nav-item" data-nav="popular"><span>◈</span><b>Most Popular</b></button>
+      <button class="nav-item" data-nav="ongoing"><span>◉</span><b>Ongoing</b></button>
+      <button class="nav-item" data-nav="catalog"><span>▦</span><b>Anime Catalog</b></button>
+      <button class="nav-item" data-nav="favorites"><span>♡</span><b>My List</b><i id="favCount">0</i></button>
+      <button class="nav-item" data-nav="channels"><span>◫</span><b>Channels</b></button>
+    </nav>
+
+    <div class="side-bottom">
+      <div class="side-card">
+        <span class="pulse"></span>
+        <div><b>Live index</b><small>Bot-synced catalog</small></div>
+      </div>
+      <button id="themeBtn" class="side-action">☾ <span>Appearance</span></button>
     </div>
-  </nav>
+  </aside>
 
-  <!-- 1. Cinematic Hero Banner -->
-  <header class="hero-container" id="hero-section">
-    <!-- Injected via app.js -->
-  </header>
+  <div id="sidebarShade" class="sidebar-shade"></div>
 
-  <main class="main-content">
-    <!-- 2. Most Popular (Horizontal Big Posters) -->
-    <section id="popular" class="rail-section">
-      <div class="section-header">
-        <h2>🔥 Most Popular</h2>
-        <p>Top viewed titles on Swordsmith</p>
+  <div class="app-shell">
+    <header class="topbar">
+      <button id="menuBtn" class="circle-btn mobile-only">☰</button>
+      <div class="top-brand"><div class="logo small">A</div><span>Anime <b>Index</b></span></div>
+      <div class="top-actions">
+        <button id="searchFocus" class="top-search">⌕ <span>Search anime...</span><kbd>⌘ K</kbd></button>
+        <button id="channelsBtn" class="circle-btn">▦</button>
       </div>
-      <div class="horizontal-rail" id="popular-rail">
-        <div class="loading-spinner"></div>
-      </div>
-    </section>
+    </header>
 
-    <!-- 3. Ongoing Anime (Horizontal Big Posters) -->
-    <section id="ongoing" class="rail-section">
-      <div class="section-header">
-        <h2>⚡ Ongoing Series</h2>
-        <p>Currently airing & updating weekly</p>
-      </div>
-      <div class="horizontal-rail" id="ongoing-rail">
-        <div class="loading-spinner"></div>
-      </div>
-    </section>
-
-    <!-- 4. Complete Catalog (Data-Rich Grid) -->
-    <section id="catalog" class="catalog-section">
-      <div class="section-header catalog-header">
-        <div>
-          <h2>📚 Complete Catalog</h2>
-          <p id="catalog-count">Loading titles...</p>
+    <main>
+      <section class="announcement">
+        <span class="announce-dot"></span>
+        <strong>ANIME SWORDSMITH</strong>
+        <div class="marquee">
+          <div class="marquee-track">New episodes are indexed automatically • Follow the source channel for updates • Search titles, genres and years • New episodes are indexed automatically • Follow the source channel for updates •</div>
         </div>
-        <div class="controls">
-          <input type="text" id="search-input" class="search-box" placeholder="Search anime...">
-          <select id="sort-select" class="sort-box">
-            <option value="title">A-Z</option>
-            <option value="recent">Recently Added</option>
-            <option value="score">Highest Rated</option>
-            <option value="episodes">Most Episodes</option>
-          </select>
+        <span class="announce-arrow">›</span>
+      </section>
+
+      <section id="hero" class="hero-pro" hidden></section>
+
+      <section class="quick-tools">
+        <div class="search-pro" id="searchBox">
+          <span>⌕</span>
+          <input id="searchInput" type="search" placeholder="Search anime, genre, studio..." autocomplete="off">
+          <button id="clearBtn" hidden>×</button>
         </div>
-      </div>
-      <div class="anime-grid" id="catalog-grid">
-        <div class="loading-spinner"></div>
-      </div>
-    </section>
-  </main>
+        <button id="filterBtn" class="filter-btn">☷ <span>Filters</span></button>
+      </section>
+
+      <div id="genreBar" class="chips"></div>
+
+      <section id="popularBlock" class="rail-section" hidden>
+        <div class="section-head"><div><span class="eyebrow">TRENDING NOW</span><h2>Most Popular</h2></div><button class="see-all" data-nav="popular">View all →</button></div>
+        <div id="popularRail" class="rail"></div>
+      </section>
+
+      <section id="ongoingBlock" class="rail-section" hidden>
+        <div class="section-head"><div><span class="eyebrow live">UPDATED LIVE</span><h2>Ongoing Anime</h2></div><button class="see-all" data-nav="ongoing">View all →</button></div>
+        <div id="ongoingRail" class="rail"></div>
+      </section>
+
+      <section id="catalogSection" class="catalog-section">
+        <div class="catalog-head">
+          <div><span class="eyebrow">LIBRARY</span><h2>Anime Catalog</h2><p id="resultCount">Loading...</p></div>
+          <div class="catalog-controls">
+            <div id="letterBar" class="letters"></div>
+            <select id="sortSelect"><option value="title">A — Z</option><option value="score">Highest rated</option><option value="year">Newest</option></select>
+          </div>
+        </div>
+        <div id="grid" class="grid"></div>
+        <div id="empty" class="empty" hidden><div class="empty-art">⌁</div><h2>Nothing found</h2><p>Try another title, genre or letter.</p></div>
+        <div id="loader" class="loader"><span></span></div>
+      </section>
+    </main>
+
+    <nav class="mobile-nav">
+      <button class="active" data-nav="home"><span>⌂</span><small>Home</small></button>
+      <button data-nav="popular"><span>◈</span><small>Popular</small></button>
+      <button data-nav="ongoing"><span>◉</span><small>Ongoing</small></button>
+      <button data-nav="favorites"><span>♡</span><small>My List</small></button>
+      <button data-nav="catalog"><span>▦</span><small>Browse</small></button>
+    </nav>
+  </div>
+
+  <div id="detail" class="detail" hidden></div>
+  <div id="sheet" class="sheet" hidden></div>
+  <div id="toast" class="toast"></div>
 
   <script src="/static/app.js"></script>
 </body>
