@@ -67,6 +67,12 @@ inside the Agent Canvas environment.
 - AniList is the primary metadata provider, Jikan the fallback. AniList's
   single-`Media` query 404s on unmatched titles — use `Page.media` so it returns
   an empty list instead.
+- The metadata clients throttle with a module-level `asyncio.Lock` plus a min
+  interval. A `Lock` is **not reentrant**: a retry must run *outside* the
+  `async with _lock:` block (release, back off, loop). Retrying recursively while
+  still holding the lock deadlocks, and with `enrich_pending`'s
+  `asyncio.wait_for(..., 20)` the whole enrichment pass stalls ~20s on the first
+  AniList 429. Keep retries as a bounded `for attempt in range(...)` loop.
 - Title matching uses progressively looser candidate strings; keep the
   `_TRAILING_NUM` regex requiring a real separator so `Mob Psycho 100` is not
   truncated.
