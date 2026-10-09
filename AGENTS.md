@@ -23,7 +23,7 @@ inside the Agent Canvas environment.
 - `from __future__ import annotations` at the top of every module.
 - DB access: use the `session_scope()` helper for ad-hoc sessions and the
   `get_session` FastAPI dependency for request handlers. Never call
-  `get_session().__next__()` — it leaks the generator.
+  `get_session().__next__()` â it leaks the generator.
 - All SQLAlchemy models live in `app/models.py`; schema is created with
   `Base.metadata.create_all`, so new columns need a manual `ALTER TABLE` on
   existing databases (there is no migration tool). `init_db` calls `_migrate`,
@@ -47,17 +47,17 @@ inside the Agent Canvas environment.
 - The Telegram webhook must always return `{"ok": true}`; wrap handlers in
   try/except and log instead of propagating.
 - Telegram retries an update when the webhook does not answer within ~30s, and
-  Heroku kills the request there (`H12` → 503). Anything a command does over the
+  Heroku kills the request there (`H12` â 503). Anything a command does over the
   network (`/catalog`, `/refresh`) must therefore run as a detached background
   task (`catalog.spawn`) and report its own result; the request handler returns
-  immediately. Never block the event loop with `time.sleep` in a request path —
+  immediately. Never block the event loop with `time.sleep` in a request path â
   use `asyncio.sleep` (see `telegram_web.fetch_channel`).
 - Do not `await` a Telegram send in a webhook handler either: `sendMessage` can
   take seconds, which eats the same 30s budget. Use `webhook.notify_later`, which
   fires the send as a background task.
 - Telegram re-delivers an update whose response was slow, so the same `/catalog`
   can arrive several times. `_catalog_running` collapses them: only the first
-  starts a scrape, the rest get "Already reading�". Never start a second scrape
+  starts a scrape, the rest get "Already readingÉ". Never start a second scrape
   for a channel that already has one in flight.
 - A single `uvicorn` worker serves both the Telegram webhook and the Mini App
   API, so anything that stalls the event loop stalls the app.
@@ -65,7 +65,7 @@ inside the Agent Canvas environment.
 ## Gotchas
 
 - AniList is the primary metadata provider, Jikan the fallback. AniList's
-  single-`Media` query 404s on unmatched titles — use `Page.media` so it returns
+  single-`Media` query 404s on unmatched titles â use `Page.media` so it returns
   an empty list instead.
 - The metadata clients throttle with a module-level `asyncio.Lock` plus a min
   interval. A `Lock` is **not reentrant**: a retry must run *outside* the
@@ -94,7 +94,7 @@ The Mini App is driven by `AnimeEntry` rows, not `Post` rows:
 - `services/telegram_web.py` scrapes a public index channel's `t.me/s/<user>`
   preview. It returns `(entries, details)`: numbered series-list pairs and the
   Season/Episodes/Audio/Genres detail cards. Channel posts use decorative
-  small-caps (`ᴇ ᴘ ɪ ꜱ ᴏ ᴅ ᴇ ꜱ`), so field regexes must include those codepoints.
+  small-caps (`á´ á´ Éª ê± á´ á´ á´ ê±`), so field regexes must include those codepoints.
 - `services/catalog.py` writes entries first (`import_entries`), merges detail
   cards (`apply_details`), and enriches metadata as a separate pass
   (`enrich_pending`) because AniList rate-limits at 0.7s/request.
@@ -125,14 +125,43 @@ Episode 1 - https://t.me/FileBot?start=a1
   message-wide fields that leak one season's subtitles onto another.
 - `webhook._handle_message` treats any non-command message that
   `looks_like_episode_message` as episode input; `/episodes` forces it.
-- `catalog.find_entry` matches the title loosely (match_key → raw name →
+- `catalog.find_entry` matches the title loosely (match_key â raw name â
   longest catalog name contained in the query), so "Demon Slayer" finds
   "Demon Slayer: Kimetsu no Yaiba".
 - `catalog.upsert_episodes` is keyed by (entry, season number) and
   (season, episode number), so re-sending a corrected message updates links in
   place. `catalog.entry_seasons` shapes the payload the Mini App reads.
-- Defaults the UI always shows even with no episode data: `480p · 720p · 1080p ·
+- Defaults the UI always shows even with no episode data: `480p Â· 720p Â· 1080p Â·
   HD-RIP` and `English Sub` (see `api.DEFAULT_QUALITIES` / `DEFAULT_SUBTITLES`).
+
+## Release channels (`/syncepisodes`)
+
+A "single-anime" release channel posts one block per episode with a `START`
+deep link, e.g. `➥ Episode : 01` / `➥ Season : 01` / `➥ Audio : Japanese
+[Eng Sub]`. `/syncepisodes <@channel> [anime]` builds that anime's episode list
+from those posts.
+
+- `services/release_parser.py` parses one post. `unicodedata.normalize("NFKC")`
+  folds the decorative bold/fullwidth fonts to ASCII first (`𝟰𝟴𝟬𝗽` → `480p`).
+  One post can hold several episode blocks (split on the `────`/`┃███` rules)
+  sharing a single link at the bottom, or the link may only exist as Telegram's
+  link-preview card — pass the post's anchors as `fallback_urls`. `Audio : X
+  [Eng Sub]` yields audio `X` and subtitles `English`; `Jap + Eng [Dual audio]`
+  yields `Japanese, English`. Output matches `episode_parser` so it feeds
+  `catalog.upsert_episodes` unchanged (`quality_tags` is a comma string).
+- `catalog.collect_release_episodes` is network-only; `apply_release_episodes`
+  is DB-only. Keep them split — SQLite takes a write lock as soon as a session
+  has pending changes, so the channel fetch must happen before the session opens.
+  `sync_release_channel` is the two together for callers that don't care.
+- The anime is resolved as: the name passed on the command → `RELEASE_CHANNEL_MAP`
+  → the channel's own `og:title` (`telegram_web.channel_title`, exposed on each
+  post as `channel_title`) → the username. Single-anime channels are named after
+  the show, so no argument is usually needed; when the title comes from the
+  channel and no card exists, one is created and enrichment is scheduled.
+- Private channels have no `t.me/s` preview, so their posts are read in the
+  webhook instead: `webhook._sync_release_from_post` runs on every channel post
+  and attaches episodes to the card named after the channel. It only touches
+  entries that already exist, so it never drifts onto unrelated feed channels.
 
 ## Multi-channel dedup and English titles
 
@@ -153,12 +182,12 @@ one card, so:
   seeds match_key + an EntryChannel for rows created before this existed. Both
   run in `refresh_all` and in the `/catalog` command, so old databases converge.
 - When merging, do NOT delete a duplicate row without first moving its
-  `EntryChannel` and `QualityLink` rows — a cascade delete would drop them.
+  `EntryChannel` and `QualityLink` rows â a cascade delete would drop them.
 
 Titles are English-only: `catalog.display_title` returns
 `title_english or title or raw_name`, never `title_japanese`. `/api/catalog`
 sorts by `coalesce(title_english, title, raw_name)`. Do not set
-`title_english` from a scraped channel name — only AniList/Jikan may supply it,
+`title_english` from a scraped channel name â only AniList/Jikan may supply it,
 or a Japanese romaji name would leak into the grid.
 
 `enrich_pending` treats a placeholder row (`anime.source == "index"`) as still
@@ -211,10 +240,7 @@ commands; everyone else can only open the Mini App and read `/help`.
 
 - `/api/catalog` defaults to `limit=120`; the Mini App asks for the max (500) so
   the grid and letter filter show the whole catalog.
-- The detail page (`static/app.js` `openDetail`) renders the seasons, episodes
-  and recommendations `/api/entry/{id}` already returns. Layout: poster banner,
-  then a two-column block (left: genres, Information, expandable Description,
-  seasons, quality; right: source channels), then the Recommended rail below.
-- `.detail-hero` uses `min-height:clamp(300px,42vh,420px)` with a poster + copy
-  flex row; keep the poster `flex-basis` overrides in the `max-width:900px` and
-  `max-width:520px` blocks so the banner does not leave dead space on mobile.
+- The Mini App keeps the Enji-03 UI. The detail page (`static/app.js`
+  `openDetail` + `seasonBlock`) is Enji-03's: hero banner, two-column body
+  (left: genres, synopsis, seasons/episodes, quality; right: channels +
+  Information). Do not swap it for Enji-01's detail markup.
