@@ -31,6 +31,7 @@ _ORDINAL = re.compile(r"\[\s*(\d+)\s*\]")
 _NUMERIC_TAIL = re.compile(r"/(\d+)(?:[/?#]|$)")
 _SKIP_TEXT = re.compile(r"^(click here|video tutorial|join here|comments|update|note)\b", re.I)
 _BARE = re.compile(r"^\s*([A-Za-z0-9][^|\n]{1,120}?)\s*\|\s*(https?://\S+)\s*$")
+_CHANNEL_TITLE = re.compile(r'<meta\s+property="og:title"\s+content="([^"]*)"', re.I)
 
 _UI_TEXT = {"view in telegram", "preview channel", "join", "share", "comments", "update", "note"}
 _PLACEHOLDER = re.compile(r"^\[?\s*(channel\s*link|click here|link)\s*\]?$", re.I)
@@ -160,6 +161,15 @@ def parse_channel(html: str, source: str) -> tuple[list[dict], list[dict]]:
     return entries, details
 
 
+def channel_title(html: str) -> str | None:
+    """The channel's display title from the preview's ``og:title`` meta tag."""
+    match = _CHANNEL_TITLE.search(html)
+    if not match:
+        return None
+    title = _html.unescape(match.group(1)).strip()
+    return title or None
+
+
 async def fetch_channel(username: str, max_pages: int = 40) -> tuple[list[dict], list[dict]]:
     """Page through ``t.me/s/<username>`` and return (entries, details)."""
     username = username.lstrip("@")
@@ -216,3 +226,96 @@ async def fetch_channel(username: str, max_pages: int = 40) -> tuple[list[dict],
         username,
     )
     return entries, details
+
+
+def parse_posts(html: str, source: str) -> list[dict]:
+    """Parse a channel page into raw posts: {message_id, text, links, url}.
+
+    Used by the release-channel sync, which needs the post's plain text (to read
+    Season/Episode/Audio) and every anchor it carries (to catch the START deep
+    link), which the entry/detail split throws away.
+    """
+    source = source.lstrip("@")
+    posts: list[dict] = []
+    for block in re.split(r'data-post="', html)[1:]:
+        match = re.match(rf"{re.escape(source)}/(\d+)\"", block, re.I)
+        if not match:
+            continue
+        body = re.search(
+            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block, re.S
+        )
+        if not body:
+            continue
+        texts = [_plain(body.group(1))]
+        for inner in re.findall(
+            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>', block, re.S
+        ):
+            texts.append(_plain(inner))
+        text = "\n".join(dict.fromkeys(texts))
+        links: list[str] = []
+        delegates = re.search(r'<a[^>]+href="(https?://[^"]+)"[^>]*class="[^"]*tgme_widget_message_link_preview', block)
+        for url, _ in _ANCHOR.findall(body.group(1)):
+            if url.startswith("http"):
+                links.append(url)
+        if delegates:
+            links.append(delegates.group(1))
+        posts.append(
+            {
+                "message_id": int(match.group(1)),
+                "text": text,
+                "links": list(dict.fromkeys(links)),
+                "url": f"https://t.me/{source}/{match.group(1)}",
+            }
+        )
+    return posts
+
+
+async def fetch_posts(username: str, max_pages: int = 40) -> list[dict]:
+    """Page through ``t.me/s/<username>`` and return its raw posts.
+
+    Each post gains the channel's display title (same value on every post) so a
+    single-anime channel can be matched to a catalog entry without the owner
+    naming the anime.
+    """
+    username = username.lstrip("@")
+    posts: list[dict] = []
+    seen: set[int] = set()
+    before: int | None = None
+    title: str | None = None
+    headers = {"User-Agent": _UA, "Accept-Language": "en-US,en;q=0.9"}
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers) as client:
+        for _ in range(max_pages):
+            url = f"https://t.me/s/{username}"
+            if before is not None:
+                url += f"?before={before}"
+            try:
+                resp = await client.get(url)
+                resp.raise_for_status()
+            except httpx.HTTPError as exc:
+                log.warning("Post preview fetch failed for %s: %s", username, exc)
+                break
+            if title is None:
+                title = channel_title(resp.text)
+            page_posts = parse_posts(resp.text, username)
+            for post in page_posts:
+                if post["message_id"] not in seen:
+                    seen.add(post["message_id"])
+                    posts.append(post)
+            ids = [
+                int(m)
+                for m in re.findall(rf'data-post="{re.escape(username)}/(\d+)"', resp.text)
+            ]
+            if not ids:
+                break
+            oldest = min(ids)
+            if before == oldest:
+                break
+            before = oldest
+            await asyncio.sleep(0.3)
+
+    posts.sort(key=lambda p: p["message_id"])
+    for post in posts:
+        post["channel_title"] = title
+    log.info("Read %d post(s) from @%s", len(posts), username)
+    return posts

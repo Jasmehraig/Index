@@ -602,6 +602,153 @@ async def refresh_all(db: Session) -> dict:
     return total
 
 
+# ---------------------------------------------------------------------------
+# Release channels: a feed of episodes for one anime, synced into its card
+# ---------------------------------------------------------------------------
+
+RELEASE_SOURCE = "release"
+
+# Channels whose whole point is releases for one anime. The bot cannot read a
+# channel's description over the web preview, so the mapping from channel to
+# anime is declared by the owner with /syncepisodes rather than guessed.
+RELEASE_CHANNEL_MAP: dict[str, str] = {}
+
+
+async def collect_release_episodes(username: str, query: dict | None = None) -> dict:
+    """Read and parse a release channel. Network only: opens no DB session.
+
+    The anime is chosen in this order: the name the owner passed, a saved
+    channel→anime mapping, then the channel's own display title (single-anime
+    channels are named after the show, so this needs no input at all). Only
+    when an explicit name was given do we require posts to name that title.
+    """
+    from ..services import release_parser, telegram_web
+
+    source = username.lstrip("@")
+    posts = await telegram_web.fetch_posts(source)
+    channel_title = (posts[0].get("channel_title") if posts else None) or None
+    explicit = (query or {}).get("title")
+    title = explicit or RELEASE_CHANNEL_MAP.get(source.lower()) or channel_title or source
+
+    releases: list[dict] = []
+    skipped = 0
+    for post in posts:
+        text = post.get("text") or ""
+        if not release_parser.looks_like_release_post(text, post.get("links")):
+            skipped += 1
+            continue
+        parsed = release_parser.parse_release_post(text, post.get("links"))
+        if not parsed:
+            skipped += 1
+            continue
+        # Only weed out other titles when the owner named this one by hand.
+        if explicit and parsed.get("name") and not release_parser.mentions_name(
+            parsed["name"], title
+        ):
+            if not release_parser.mentions_name(text, title):
+                skipped += 1
+                continue
+        releases.append(parsed)
+
+    if explicit:
+        title_source = "explicit"
+    elif source.lower() in RELEASE_CHANNEL_MAP:
+        title_source = "map"
+    elif channel_title:
+        title_source = "channel"
+    else:
+        title_source = "fallback"
+
+    return {
+        "channel": source,
+        "entry": title,
+        "channel_title": channel_title,
+        "title_source": title_source,
+        "posts": len(posts),
+        "releases": releases,
+        "skipped": skipped,
+    }
+
+
+def apply_release_episodes(db: Session, collected: dict) -> dict:
+    """Attach already-parsed releases to the catalog. DB only: opens no network."""
+    from ..services import telegram_web
+
+    source = collected["channel"]
+    title = collected["entry"]
+    releases = collected["releases"]
+    result = {
+        "channel": source,
+        "entry": title,
+        "channel_title": collected.get("channel_title"),
+        "posts": collected["posts"],
+        "episodes": 0,
+        "seasons": [],
+        "skipped": collected["skipped"],
+        "matched": False,
+    }
+
+    # The deep link so the card's Watch button reaches the files too.
+    first_url = next(
+        (
+            ep["url"]
+            for parsed in releases
+            for season in parsed["seasons"]
+            for ep in season["episodes"]
+        ),
+        None,
+    )
+
+    entry = find_entry(db, title)
+    if entry is None and collected.get("title_source") == "channel":
+        # The anime was identified from a single-anime channel's own name, so
+        # create its card on first sync rather than asking the owner to /catalog.
+        entry = AnimeEntry(
+            raw_name=title,
+            match_key=_key(title),
+            source_chat=source,
+            channel_link=first_url,
+            channel_kind=telegram_web.channel_kind(first_url) if first_url else "file_bot",
+        )
+        db.add(entry)
+        db.commit()
+        result["created"] = True
+    if entry is None:
+        return result
+
+    for parsed in releases:
+        upsert_episodes(db, entry, parsed)
+
+    if first_url:
+        _record_channel(db, entry, source, first_url, telegram_web.channel_kind(first_url))
+        db.commit()
+
+    seasons_list = entry_seasons(entry)
+    result["matched"] = True
+    result["seasons"] = sorted({s["number"] for s in seasons_list})
+    result["episodes"] = sum(len(s["episodes"]) for s in seasons_list)
+    log.info(
+        "Release sync %s -> %s: %d episode(s) across %s season(s), %d post(s) skipped",
+        source,
+        entry.raw_name,
+        result["episodes"],
+        result["seasons"],
+        result["skipped"],
+    )
+    return result
+
+
+async def sync_release_channel(db: Session, username: str, query: str | None = None) -> dict:
+    """Read a release channel and attach its episodes to one catalog entry.
+
+    ``username`` is the channel to scrape; ``query`` is the anime the owner says
+    it feeds (falls back to the mapping, then the channel's own name). Posts that
+    do not parse as releases, or that name a different title, are skipped.
+    """
+    collected = await collect_release_episodes(username, {"title": query} if query else None)
+    return apply_release_episodes(db, collected)
+
+
 def find_entry(db: Session, name: str) -> AnimeEntry | None:
     """Find the catalog row a free-text title refers to.
 
