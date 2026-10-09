@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import Channel, Post, session_scope
+from ..models import AnimeEntry, Channel, Post, session_scope
 from ..services import episode_parser, index_parser, ongoing_parser, rss
 from ..services.ingest import build_episode_hint, ingest_entries, match_or_create_anime
 from ..services.telegram import TelegramClient, TelegramError
@@ -158,6 +158,55 @@ def _message_link(channel: Channel, message_id: int) -> str:
     return f"https://t.me/c/{str(channel.chat_id).lstrip('-100')}/{message_id}"
 
 
+async def _sync_release_from_post(db: Session, message: dict, channel: Channel) -> None:
+    """Attach a release post's episodes to the single-anime channel's entry.
+
+    Single-anime release channels (public or private) are named after the show,
+    so the channel title identifies the catalog card. Private channels have no
+    web preview to scrape, so their posts can only be read here, in the webhook.
+
+    Only runs for channels the owner has already pointed at the catalog (via
+    /syncepisodes or an earlier post), which keeps indexing from drifting onto
+    every feed channel the bot happens to be added to.
+    """
+    from ..services import catalog, release_parser, telegram_web
+
+    text = message.get("caption") or message.get("text") or ""
+    entities = message.get("caption_entities") or message.get("entities") or []
+    links = [e.get("url") for e in entities if e.get("type") == "text_link" and e.get("url")]
+    if not release_parser.looks_like_release_post(text, links):
+        return
+    parsed = release_parser.parse_release_post(text, links)
+    if not parsed:
+        return
+
+    entry = catalog.find_entry(db, channel.title)
+    if entry is None:
+        entry = db.scalar(
+            select(AnimeEntry).where(
+                AnimeEntry.source_chat == (channel.username or channel.title)
+            )
+        )
+    if entry is None:
+        return
+
+    catalog.upsert_episodes(db, entry, parsed)
+    first_url = next(
+        (ep["url"] for season in parsed["seasons"] for ep in season["episodes"]),
+        None,
+    )
+    if first_url:
+        catalog._record_channel(
+            db,
+            entry,
+            channel.username or channel.title,
+            first_url,
+            telegram_web.channel_kind(first_url),
+        )
+        db.commit()
+    log.info("Attached release post to %s from %s", entry.raw_name, channel.title)
+
+
 @router.post("/telegram/webhook")
 async def telegram_webhook(
     request: Request,
@@ -222,6 +271,12 @@ async def _handle_channel_post(message: dict) -> None:
         posts = await _index_channel_post(db, message, channel)
         if posts:
             log.info("Indexed %d entry(ies) from %s", len(posts), channel.title)
+        # Public release channels are also pulled from the web preview by
+        # /syncepisodes; this covers private ones, whose posts only arrive here.
+        try:
+            await _sync_release_from_post(db, message, channel)
+        except Exception as exc:  # noqa: BLE001 - extra sync is best effort
+            log.warning("Release sync from post failed for %s: %s", channel.title, exc)
     finally:
         db.close()
 
@@ -286,6 +341,8 @@ async def _handle_message(message: dict) -> None:
         await _send_quality(chat_id, text, user_id)
     elif command in ("/episodes", "/addepisodes"):
         await _send_episodes(chat_id, text, user_id)
+    elif command in ("/syncepisodes", "/syncep"):
+        await _send_sync_episodes(chat_id, text, user_id)
     elif command in ("/ongoing", "/airing"):
         await _send_ongoing(chat_id, text, user_id, message.get("entities") or [])
     elif command == "/enrich":
@@ -439,6 +496,100 @@ async def _send_ongoing(chat_id: int, text: str, user_id: int | None, entities: 
     ]
     lines += [f"{i}. {n}" for i, n in enumerate(result["names"], 1)]
     await _notify(chat_id, "\n".join(lines), reply_markup=_mini_app_keyboard())
+
+
+async def _send_sync_episodes(chat_id: int, text: str, user_id: int | None) -> None:
+    """Read a release channel and attach its episodes to one catalog entry.
+
+    Usage: ``/syncepisodes <@channel> [anime name]``. The channel is the one that
+    posts per-episode START links; the anime name says which catalog card they
+    belong to. Runs detached, so the webhook still answers immediately.
+    """
+    from ..services import catalog as catalog_service
+
+    parts = text.split(maxsplit=2)
+    if len(parts) < 2 or not parts[1].strip():
+        await _notify(
+            chat_id,
+            "Usage: <code>/syncepisodes &lt;@channel&gt; [anime name]</code>\n"
+            "Example: <code>/syncepisodes @Ongoing_Swordsmith Jujutsu Kaisen</code>",
+        )
+        return
+
+    ref = parts[1].strip().lstrip("@").replace("https://t.me/", "").strip("/")
+    query = parts[2].strip() if len(parts) > 2 else None
+
+    db = session_scope()
+    try:
+        if not _is_admin(db, user_id):
+            await _notify(chat_id, "🔒 Only owners and admins can run this.")
+            return
+        entry = catalog_service.find_entry(db, query) if query else None
+    finally:
+        db.close()
+
+    if query and entry is None:
+        await _notify(
+            chat_id,
+            f"I couldn't find <b>{query}</b> in the catalog. Run /catalog first, or "
+            "check the spelling.",
+        )
+        return
+
+    if catalog_service.spawn(_run_sync_episodes(chat_id, ref, query)) is None:  # pragma: no cover
+        await _notify(chat_id, "⚠️ Could not start the sync. Try again.")
+
+
+async def _run_sync_episodes(chat_id: int, ref: str, query: str | None) -> None:
+    """Background half of ``/syncepisodes``.
+
+    The network read happens before any DB session is opened: SQLite takes a
+    write lock as soon as a session has pending changes, and holding one across
+    the channel fetch would block every other writer.
+    """
+    from ..services import catalog as catalog_service
+
+    try:
+        collected = await catalog_service.collect_release_episodes(
+            ref, {"title": query} if query else None
+        )
+    except Exception as exc:  # noqa: BLE001 - report, do not crash the worker
+        log.warning("Release sync failed for %s: %s", ref, exc)
+        await _notify(chat_id, f"⚠️ Could not read @{ref}: {exc}")
+        return
+
+    db = session_scope()
+    try:
+        result = catalog_service.apply_release_episodes(db, collected)
+    finally:
+        db.close()
+
+    if result.get("created"):
+        catalog_service.schedule_enrichment()
+
+    if not result["matched"]:
+        await _notify(
+            chat_id,
+            f"Read <b>{result['posts']}</b> post(s) from @{result['channel']} but could "
+            f"not place them on a card for <b>{result['entry']}</b>. Add the anime name: "
+            "<code>/syncepisodes @" + result["channel"] + " &lt;anime name&gt;</code>.",
+        )
+        return
+    if result["episodes"] == 0:
+        await _notify(
+            chat_id,
+            f"Read <b>{result['posts']}</b> post(s) from @{result['channel']} but "
+            "found no episode blocks. Check that the posts carry "
+            "<i>Episode</i>/<i>Season</i> lines and a START link.",
+        )
+        return
+    seasons = ", ".join(str(s) for s in result["seasons"]) or "-"
+    await _notify(
+        chat_id,
+        f"✅ Synced <b>{result['entry']}</b> from @{result['channel']}: "
+        f"<b>{result['episodes']}</b> episode(s) across season(s) {seasons}. "
+        f"Open the Mini App to see them.",
+    )
 
 
 async def _send_enrich(chat_id: int, user_id: int | None) -> None:
@@ -643,6 +794,8 @@ async def _send_help(chat_id: int) -> None:
         "/import – paste a name+link list to index it manually\n"
         "/catalog &lt;@channel&gt; – build the catalog from an index channel\n"
         "/quality &lt;id&gt; &lt;quality&gt; &lt;link&gt; – add a download link\n"
+        "/syncepisodes &lt;@channel&gt; [anime] – build the episode list from a "
+        "release channel's posts\n"
         "/ongoing – manage the Ongoing rail (send an <i>ongoing anime</i> list)\n"
         "/enrich – fetch missing posters now\n\n"
         "<b>Adding episodes</b>\n"
