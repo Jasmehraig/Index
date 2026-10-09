@@ -16,6 +16,10 @@ from ..services.telegram import TelegramClient, TelegramError
 log = logging.getLogger("index.webhook")
 router = APIRouter(tags=["telegram"])
 
+# Index channels with a /catalog scrape in flight, so Telegram's retries do not
+# start a second full scrape of the same channel.
+_catalog_running: set[str] = set()
+
 
 def _mini_app_keyboard() -> dict:
     settings = get_settings()
@@ -454,7 +458,13 @@ _EPISODE_HELP = (
 
 
 async def _send_catalog_import(chat_id: int, text: str) -> None:
-    """Read a public index channel and rebuild the catalog from its posts."""
+    """Read a public index channel and rebuild the catalog from its posts.
+
+    The scrape can take longer than Telegram's webhook timeout, so this only
+    validates the argument and starts a detached task; the task reports its own
+    progress and result. The webhook returns ``{"ok": true}`` immediately, even
+    if Telegram is slow, because nothing here is awaited on the network.
+    """
     from ..services import catalog as catalog_service
 
     parts = text.split(maxsplit=1)
@@ -463,7 +473,7 @@ async def _send_catalog_import(chat_id: int, text: str) -> None:
     if not ref:
         refs = settings.index_channel_usernames
         if not refs:
-            await _notify(
+            notify_later(
                 chat_id,
                 "Usage: <code>/catalog @IndexChannel</code>\n\n"
                 "I read that channel's public preview, take every anime name and "
@@ -475,46 +485,71 @@ async def _send_catalog_import(chat_id: int, text: str) -> None:
 
     ref = ref.lstrip("@").replace("https://t.me/", "").strip("/")
     if ref.startswith("+"):
-        await _notify(
+        notify_later(
             chat_id,
             "⚠️ I can only read <b>public</b> channels by username. "
             "Send a public index channel like <code>/catalog @MyIndex</code>.",
         )
         return
 
-    await _notify(chat_id, f"⏳ Reading @{ref}…")
-    db = session_scope()
-    try:
-        catalog_service.backfill_match_keys(db)
-        result = await catalog_service.import_from_channel(db, ref)
-        collapsed = catalog_service.collapse_duplicates(db)
-        pending = catalog_service.count_unenriched(db)
-        # Posters, scores and genres load in the background after the import.
-        catalog_service.schedule_enrichment()
-    except Exception as exc:  # noqa: BLE001 - surface any scrape failure to the user
-        log.warning("Catalog import failed for %s: %s", ref, exc)
-        await _notify(chat_id, f"❌ Could not read @{ref}. Is it public?")
+    # Telegram retries an update when the webhook is slow, so the same /catalog
+    # often arrives several times. Only the first starts a scrape; the rest are
+    # told it is already running instead of stampeding the one worker.
+    key = ref.lower()
+    if key in _catalog_running:
+        notify_later(chat_id, f"⏳ Already reading @{ref}… I'll post the result when it's done.")
         return
-    finally:
-        db.close()
+    _catalog_running.add(key)
+    catalog_service.spawn(_run_catalog_import(chat_id, ref, key))
 
-    merged_line = ""
-    if result.get("merged") or collapsed.get("merged"):
-        merged_line = (
-            f"• 🔀 {result.get('merged', 0) + collapsed.get('merged', 0)} duplicate(s) "
-            "merged into existing entries\n"
+
+def notify_later(chat_id: int, text: str, reply_markup=None) -> None:
+    """Send a Telegram message off the request path (best effort)."""
+    from ..services import catalog as catalog_service
+
+    catalog_service.spawn(_notify(chat_id, text, reply_markup=reply_markup))
+
+
+async def _run_catalog_import(chat_id: int, ref: str, key: str) -> None:
+    """Background half of ``/catalog``: scrape, merge and report the result."""
+    from ..services import catalog as catalog_service
+
+    await _notify(chat_id, f"⏳ Reading @{ref}…")
+    try:
+        db = session_scope()
+        try:
+            catalog_service.backfill_match_keys(db)
+            result = await catalog_service.import_from_channel(db, ref)
+            collapsed = catalog_service.collapse_duplicates(db)
+            pending = catalog_service.count_unenriched(db)
+            # Posters, scores and genres load in the background after the import.
+            catalog_service.schedule_enrichment()
+        except Exception as exc:  # noqa: BLE001 - surface any scrape failure to the user
+            log.warning("Catalog import failed for %s: %s", ref, exc)
+            await _notify(chat_id, f"❌ Could not read @{ref}. Is it public?")
+            return
+        finally:
+            db.close()
+
+        merged_line = ""
+        if result.get("merged") or collapsed.get("merged"):
+            merged_line = (
+                f"• 🔀 {result.get('merged', 0) + collapsed.get('merged', 0)} duplicate(s) "
+                "merged into existing entries\n"
+            )
+        await _notify(
+            chat_id,
+            f"✅ Catalog updated from <b>@{ref}</b>\n"
+            f"• {result['created']} new, {result['updated']} refreshed "
+            f"({result['total']} listed)\n"
+            f"• {result.get('details', 0)} detail card(s) merged\n"
+            f"{merged_line}"
+            f"• 🖼 Fetching posters for {pending} title(s) in the background \n\n"
+            "Open the mini app to browse it.",
+            reply_markup=_mini_app_keyboard(),
         )
-    await _notify(
-        chat_id,
-        f"✅ Catalog updated from <b>@{ref}</b>\n"
-        f"• {result['created']} new, {result['updated']} refreshed "
-        f"({result['total']} listed)\n"
-        f"• {result.get('details', 0)} detail card(s) merged\n"
-        f"{merged_line}"
-        f"• 🖼 Fetching posters for {pending} title(s) in the background \n\n"
-        "Open the mini app to browse it.",
-        reply_markup=_mini_app_keyboard(),
-    )
+    finally:
+        _catalog_running.discard(key)
 
 
 async def _send_quality(chat_id: int, text: str, user_id: int | None) -> None:
@@ -623,18 +658,34 @@ def _is_admin(db: Session, user_id: int | None) -> bool:
 
 
 async def _send_refresh(chat_id: int, user_id: int | None) -> None:
+    """Re-scan every channel's feed. Runs detached so the webhook answers fast."""
+    from ..services import catalog as catalog_service
+
     db = session_scope()
     try:
         if not _is_admin(db, user_id):
             await _notify(chat_id, "🔒 Only channel owners and admins can trigger a re-scan.")
             return
+    finally:
+        db.close()
 
-        from ..services.ingest import ingest_channel
+    if catalog_service.spawn(_run_refresh(chat_id)) is None:  # pragma: no cover
+        await _notify(chat_id, "⚠️ Could not start the re-scan. Try again.")
 
+
+async def _run_refresh(chat_id: int) -> None:
+    """Background half of ``/refresh``: re-ingest every channel's feed."""
+    from ..services.ingest import ingest_channel
+
+    db = session_scope()
+    try:
         channels = db.scalars(select(Channel)).all()
         total = 0
         for channel in channels:
-            total += len(await ingest_channel(db, channel))
+            try:
+                total += len(await ingest_channel(db, channel))
+            except Exception as exc:  # noqa: BLE001 - keep going on one bad feed
+                log.warning("Refresh failed for %s: %s", channel.title, exc)
         await _notify(chat_id, f"🔄 Re-scanned {len(channels)} channel(s), {total} new post(s).")
     finally:
         db.close()
@@ -768,5 +819,7 @@ async def _notify(chat_id: int, text: str, reply_markup=None) -> None:
     try:
         tg = TelegramClient()
         await tg.send_message(chat_id, text, reply_markup=reply_markup)
-    except (RuntimeError, TelegramError) as exc:
+    except Exception as exc:  # noqa: BLE001 - notifications are best effort and must
+        # never propagate: a Telegram/network hiccup here would otherwise crash a
+        # background task or bubble out of the webhook handler.
         log.info("Notify failed: %s", exc)
