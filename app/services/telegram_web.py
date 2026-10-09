@@ -14,10 +14,10 @@ index channel itself rather than only from the bot's own posts.
 """
 from __future__ import annotations
 
+import asyncio
 import html as _html
 import logging
 import re
-import time
 from urllib.parse import urlparse
 
 import httpx
@@ -203,7 +203,9 @@ async def fetch_channel(username: str, max_pages: int = 40) -> tuple[list[dict],
             if before == oldest:
                 break
             before = oldest
-            time.sleep(0.3)
+            # Yield to the event loop between pages: a synchronous sleep here
+            # would stall every other request on the same worker while paging.
+            await asyncio.sleep(0.3)
 
     for index, item in enumerate(entries):
         item["index"] = index

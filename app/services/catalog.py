@@ -403,6 +403,22 @@ def schedule_enrichment() -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+def spawn(coro) -> asyncio.Task | None:
+    """Run ``coro`` as a detached background task, if an event loop is running.
+
+    Used to keep slow work (scraping an index channel, enrichment) off the
+    webhook request so Telegram always gets its ``{"ok": true}`` in time.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    task = loop.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
 def count_unenriched(db: Session) -> int:
     rows = db.scalars(
         select(AnimeEntry).options(selectinload(AnimeEntry.anime))
