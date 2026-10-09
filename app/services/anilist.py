@@ -81,34 +81,48 @@ async def search_anime(title: str, _attempts: int = 3) -> dict | None:
 
     global _last_call
     settings = get_settings()
-    async with _lock:
-        wait = _MIN_INTERVAL - (time.monotonic() - _last_call)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.post(
-                    settings.anilist_url,
-                    json={"query": _QUERY, "variables": {"search": title.strip()}},
-                )
-            _last_call = time.monotonic()
+    for attempt in range(_attempts, 0, -1):
+        retry_after = None
+        resp = None
+        # Only the throttle check and the request hold the lock. A retry must
+        # release it first: asyncio.Lock is not reentrant, so re-entering it (as
+        # the old recursive retry did) deadlocks and stalls the whole enrichment
+        # pass for the full wait_for timeout on every 429.
+        async with _lock:
+            wait = _MIN_INTERVAL - (time.monotonic() - _last_call)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.post(
+                        settings.anilist_url,
+                        json={"query": _QUERY, "variables": {"search": title.strip()}},
+                    )
+                _last_call = time.monotonic()
+            except httpx.HTTPError as exc:
+                if attempt > 1:
+                    log.info("AniList request error: %s, retrying", exc)
+                    retry_after = 1.5
+                else:
+                    log.warning("AniList request error: %s", exc)
+                    return None
+
+        if resp is not None:
             if resp.status_code == 429 or resp.status_code >= 500:
-                if _attempts > 1:
+                if attempt > 1:
                     log.info("AniList %s for %r, retrying", resp.status_code, title)
-                    await asyncio.sleep(2.0)
-                    return await search_anime(title, _attempts - 1)
-                return None
-            if resp.status_code >= 400:
+                    retry_after = 2.0
+                else:
+                    return None
+            elif resp.status_code >= 400:
                 log.warning("AniList search failed (%s) for %r", resp.status_code, title)
                 return None
-            payload = resp.json()
-            media_list = ((payload.get("data") or {}).get("Page") or {}).get("media") or []
-            media = media_list[0] if media_list else None
-        except httpx.HTTPError as exc:
-            if _attempts > 1:
-                await asyncio.sleep(1.5)
-                return await search_anime(title, _attempts - 1)
-            log.warning("AniList request error: %s", exc)
-            return None
+            else:
+                payload = resp.json()
+                media_list = ((payload.get("data") or {}).get("Page") or {}).get("media") or []
+                media = media_list[0] if media_list else None
+                return normalize(media) if media else None
 
-    return normalize(media) if media else None
+        if retry_after is not None:
+            await asyncio.sleep(retry_after)
+    return None

@@ -117,39 +117,56 @@ async def search_anime(title: str, limit: int = 1, _attempts: int = 2) -> dict |
 
     global _last_call
     settings = get_settings()
-    async with _lock:
-        wait = _MIN_INTERVAL - (time.monotonic() - _last_call)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        try:
-            async with httpx.AsyncClient(
-                timeout=8.0,
-                headers={"Accept": "application/json", "Connection": "close"},
-            ) as client:
-                resp = await client.get(
-                    f"{settings.jikan_base_url}/anime",
-                    params={"q": query, "limit": max(1, min(limit, 5)), "sfw": "true"},
-                )
-            _last_call = time.monotonic()
+    data: list = []
+    for attempt in range(_attempts, 0, -1):
+        retry_after = None
+        resp = None
+        # Hold the lock for the throttle check and the request only. Retrying
+        # inside the lock would deadlock (asyncio.Lock is not reentrant).
+        async with _lock:
+            wait = _MIN_INTERVAL - (time.monotonic() - _last_call)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                async with httpx.AsyncClient(
+                    timeout=8.0,
+                    headers={"Accept": "application/json", "Connection": "close"},
+                ) as client:
+                    resp = await client.get(
+                        f"{settings.jikan_base_url}/anime",
+                        params={"q": query, "limit": max(1, min(limit, 5)), "sfw": "true"},
+                    )
+                _last_call = time.monotonic()
+            except httpx.HTTPError as exc:
+                if attempt > 1:
+                    retry_after = 1.0
+                else:
+                    log.warning("Jikan request error: %s", exc)
+                    return None
+
+        if resp is not None:
             # Jikan intermittently returns 429/5xx; back off and retry.
             if resp.status_code == 429 or resp.status_code >= 500:
-                if _attempts > 1:
-                    backoff = 1.5 if resp.status_code == 429 else 1.0
-                    log.info("Jikan %s for %r, retrying (%d left)", resp.status_code, query, _attempts - 1)
-                    await asyncio.sleep(backoff)
-                    return await search_anime(title, limit, _attempts - 1)
-                log.warning("Jikan unavailable (%s) for %r", resp.status_code, query)
-                return None
-            if resp.status_code >= 400:
+                if attempt > 1:
+                    retry_after = 1.5 if resp.status_code == 429 else 1.0
+                    log.info(
+                        "Jikan %s for %r, retrying (%d left)",
+                        resp.status_code,
+                        query,
+                        attempt - 1,
+                    )
+                else:
+                    log.warning("Jikan unavailable (%s) for %r", resp.status_code, query)
+                    return None
+            elif resp.status_code >= 400:
                 log.warning("Jikan search failed (%s) for %r", resp.status_code, query)
                 return None
-            data = resp.json().get("data") or []
-        except httpx.HTTPError as exc:
-            if _attempts > 1:
-                await asyncio.sleep(1.0)
-                return await search_anime(title, limit, _attempts - 1)
-            log.warning("Jikan request error: %s", exc)
-            return None
+            else:
+                data = resp.json().get("data") or []
+                break
+
+        if retry_after is not None:
+            await asyncio.sleep(retry_after)
 
     if not data:
         return None
