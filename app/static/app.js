@@ -1,340 +1,214 @@
 (() => {
-  "use strict";
+"use strict";
 
-  const tg = window.Telegram?.WebApp;
-  if (tg) {
-    tg.ready();
-    tg.expand();
-    try { tg.setHeaderColor("#090a0f"); tg.setBackgroundColor("#090a0f"); } catch (_) {}
+const tg = window.Telegram?.WebApp;
+if (tg) {
+  try { tg.ready(); tg.expand(); tg.setHeaderColor("#08090d"); tg.setBackgroundColor("#08090d"); } catch(e){}
+}
+
+const $ = (s, p=document) => p.querySelector(s);
+const $$ = (s, p=document) => [...p.querySelectorAll(s)];
+// Storage is user- and version-controlled, so it can hold anything (a value
+// written by an older build, a half-written string, a WebView quirk). A raw
+// JSON.parse would throw and abort the whole script, leaving a blank app.
+const loadFavorites = () => {
+  try {
+    const raw = localStorage.getItem("anime_index_favorites");
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch(e){ return [] }
+};
+const saveFavorites = ids => {
+  try { localStorage.setItem("anime_index_favorites", JSON.stringify(ids)); } catch(e){}
+};
+const state = {
+  q:"", genre:null, letter:null, sort:"title",
+  items:[], genres:[], popular:[], ongoing:[], channels:[],
+  favorites: loadFavorites(),
+  heroIndex:0, heroTimer:null
+};
+
+const api = async path => {
+  const r = await fetch(path, {headers:{Accept:"application/json"}});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+};
+const esc = (v="") => String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const titleOf = x => x?.title || x?.raw_name || "Unknown Anime";
+const initial = t => esc(String(t).trim()[0] || "?").toUpperCase();
+const img = (url,t) => url
+  ? `<img loading="lazy" referrerpolicy="no-referrer" src="${esc(url)}" alt="" onerror="this.outerHTML='<div class=\\'fallback\\'>${initial(t)}</div>'">`
+  : `<div class="fallback">${initial(t)}</div>`;
+const statusClass = s => {
+  s=(s||"").toLowerCase();
+  if(s.includes("air")||s.includes("releas")||s.includes("ongoing")) return "airing";
+  if(s.includes("finish")) return "finished";
+  if(s.includes("upcoming")||s.includes("not yet")) return "upcoming";
+  return "";
+};
+const toast = m => {
+  const e=$("#toast"); e.textContent=m; e.classList.add("show");
+  clearTimeout(e._t); e._t=setTimeout(()=>e.classList.remove("show"),2200);
+};
+const openLink = url => {
+  if(!url) return toast("No link available");
+  try {
+    if(tg?.openTelegramLink && /^https?:\/\/(t\.me|telegram\.me)\//.test(url)) tg.openTelegramLink(url);
+    else if(tg?.openLink) tg.openLink(url); else window.open(url,"_blank");
+  } catch(e){window.open(url,"_blank")}
+};
+const isFav = id => state.favorites.includes(String(id));
+const toggleFav = id => {
+  id=String(id);
+  state.favorites=isFav(id)?state.favorites.filter(x=>x!==id):[...state.favorites,id];
+  saveFavorites(state.favorites);
+  updateFavCount(); toast(isFav(id)?"Added to My List":"Removed from My List");
+};
+const updateFavCount=()=>{$("#favCount").textContent=state.favorites.length};
+
+function railCard(x){
+  const t=titleOf(x);
+  return `<article class="rail-card" data-id="${esc(x.id)}"><div class="rail-poster">${img(x.poster_url,t)}${x.score?`<span class="rail-score">★ ${Number(x.score).toFixed(1)}</span>`:""}<span class="rail-play">▶</span></div><h4 class="rail-title">${esc(t)}</h4></article>`;
+}
+function card(x){
+  const t=titleOf(x), st=statusClass(x.status);
+  return `<article class="card" data-id="${esc(x.id)}"><div class="poster">${img(x.poster_url,t)}<div class="poster-fade"></div>${x.episode_count?`<span class="badge">${x.episode_count} EP</span>`:""}${x.score?`<span class="score">★ ${Number(x.score).toFixed(1)}</span>`:""}${st?`<span class="status-dot ${st}"></span>`:""}</div><div class="card-info"><h3 class="card-title">${esc(t)}</h3><div class="card-sub"><span>${esc(x.year||"")}</span>${x.season_count>1?`<span>${x.season_count} seasons</span>`:""}</div></div></article>`;
+}
+
+function renderHero(x){
+  const h=$("#hero"); if(!x){h.hidden=true;return}
+  const t=titleOf(x), genres=(x.genres||"").split(",").map(s=>s.trim()).filter(Boolean).slice(0,3);
+  h.hidden=false;
+  h.innerHTML=`<div class="hero-bg" style="background-image:url('${esc(x.banner_url||x.poster_url||"")}')"></div>
+  <div class="hero-content"><span class="hero-kicker">FEATURED ANIME • ${esc(x.status||"CATALOG")}</span>
+  <h1 class="hero-title">${esc(t)}</h1><p class="hero-desc">${esc(x.synopsis||"Discover episodes, seasons, quality links and source channels in one place.")}</p>
+  <div class="hero-meta">${x.score?`<span class="meta rating">★ ${Number(x.score).toFixed(1)}</span>`:""}${x.year?`<span class="meta">${x.year}</span>`:""}${x.episodes?`<span class="meta">${x.episodes} Episodes</span>`:""}${genres.map(g=>`<span class="meta">${esc(g)}</span>`).join("")}</div>
+  <div class="hero-actions"><button class="primary-btn" data-open="${esc(x.id)}">▶ Watch now</button><button class="ghost-btn" data-fav="${esc(x.id)}">${isFav(x.id)?"♥":"♡"} My List</button></div></div>`;
+  $("[data-open]",h).onclick=()=>openDetail(x);
+  $("[data-fav]",h).onclick=()=>{toggleFav(x.id);renderHero(x)};
+}
+
+function renderRail(block,rail,items){
+  if(!items?.length){block.hidden=true;return}
+  block.hidden=false; rail.innerHTML=items.map(railCard).join("");
+  $$(".rail-card",rail).forEach(e=>e.onclick=()=>openDetail(items.find(x=>String(x.id)===e.dataset.id)));
+}
+function renderGenres(){
+  $("#genreBar").innerHTML=`<button class="chip ${!state.genre?"active":""}" data-g="">All</button>`+
+    state.genres.map(g=>`<button class="chip ${state.genre===g.name?"active":""}" data-g="${esc(g.name)}">${esc(g.name)}</button>`).join("");
+  $$(".chip",$("#genreBar")).forEach(b=>b.onclick=()=>{state.genre=b.dataset.g||null;state.letter=null;renderGenres();load()});
+}
+function renderLetters(){
+  const letters="ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+  $("#letterBar").innerHTML=`<button class="chip ${!state.letter?"active":""}" data-l="">All</button>`+
+    letters.map(l=>`<button class="chip ${state.letter===l?"active":""}" data-l="${l}">${l}</button>`).join("")+
+    `<button class="chip ${state.letter==="#"?"active":""}" data-l="#">#</button>`;
+  $$(".chip",$("#letterBar")).forEach(b=>b.onclick=()=>{state.letter=b.dataset.l||null;state.genre=null;renderGenres();load()});
+}
+function renderGrid(){
+  const items=state.items;
+  $("#loader").hidden=true; $("#empty").hidden=items.length>0;
+  $("#resultCount").textContent=`${items.length} title${items.length===1?"":"s"} indexed`;
+  $("#grid").innerHTML=items.map(card).join("");
+  $$(".card",$("#grid")).forEach(e=>e.onclick=()=>openDetail(items.find(x=>String(x.id)===e.dataset.id)));
+}
+async function loadSections(){
+  try{
+    const d=await api("/api/sections?limit=14");
+    state.popular=d.popular||[];state.ongoing=d.ongoing||[];
+    renderHero(d.hero);
+    renderRail($("#popularBlock"),$("#popularRail"),state.popular);
+    renderRail($("#ongoingBlock"),$("#ongoingRail"),state.ongoing);
+  }catch(e){}
+}
+async function load(){
+  $("#loader").hidden=false;
+  const p=new URLSearchParams(); if(state.q)p.set("q",state.q);if(state.genre)p.set("genre",state.genre);p.set("sort",state.sort);
+  try{
+    const d=await api("/api/catalog?"+p);
+    let items=d.items||[];
+    if(state.letter) items=items.filter(x=>{const c=titleOf(x).trim()[0]?.toUpperCase()||"#";return state.letter==="#"?!/[A-Z]/.test(c):c===state.letter});
+    if(state.q||state.genre||state.letter) $("#catalogSection").scrollIntoView({behavior:"smooth",block:"start"});
+    state.items=items;renderGrid();
+  }catch(e){$("#loader").hidden=true;toast("Failed to load catalog")}
+}
+
+function detailQuality(full){
+  const list=[...(full.qualities||[])].sort((a,b)=>String(a.quality).localeCompare(String(b.quality),undefined,{numeric:true}));
+  const tags=list.length?list:(full.quality_tags||["480p","720p","1080p","HD-RIP"]).map(q=>({quality:q}));
+  return tags.map(q=>`<button class="quality-btn" ${q.url?`data-link="${esc(q.url)}"`:""}><span class="q-name">${esc(String(q.quality).toUpperCase())}</span><span class="q-sub">${q.url?"Download":"Available"}</span></button>`).join("");
+}
+function channelButtons(full){
+  const list=full.channels?.length?full.channels:(full.channel_link?[{url:full.channel_link,kind:full.channel_kind}] :[]);
+  if(!list.length)return `<p class="synopsis">No channel link recorded yet.</p>`;
+  return list.map(c=>`<button class="channel-btn" data-link="${esc(c.url)}"><span class="ch-icon">◫</span><span class="ch-main"><span class="ch-title">${esc(c.source||"Source Channel")}</span><span class="ch-url">${esc(c.url||"")}</span></span><span class="ch-go">›</span></button>`).join("");
+}
+function seasonBlock(seasons){
+  if(!seasons?.length)return `<p class="section-label">Episodes</p><p class="synopsis">No seasons have been added yet.</p>`;
+  const s=seasons[0];
+  return `<p class="section-label">Season ${String(s.number).padStart(2,"0")} · Episodes</p>
+  <div class="info-box"><div class="info-line"><b>Audio</b>${esc(s.audio||"Japanese")}</div><div class="info-line"><b>Subtitles</b>${esc(s.subtitles||"English Sub")}</div></div>
+  <div class="episode-list" style="margin-top:10px">${(s.episodes||[]).map(ep=>`<button class="episode-row" data-link="${esc(ep.url)}"><span class="ep-index">${String(ep.number).padStart(2,"0")}</span><span class="ep-main"><span class="ep-title">${esc(ep.title||"Episode "+ep.number)}</span><span class="ep-sub">Tap to watch</span></span><span>▶</span></button>`).join("")||`<p class="synopsis">No episodes added yet.</p>`}</div>`;
+}
+async function openDetail(item){
+  if(!item)return;
+  const d=$("#detail");d.hidden=false;document.body.style.overflow="hidden";
+  d.innerHTML=`<div class="detail-hero"><div class="hero-bg" style="background-image:url('${esc(item.banner_url||item.poster_url||"")}')"></div><button class="circle-btn detail-close" id="detailClose">×</button><div class="detail-body"><h1 class="detail-title">${esc(titleOf(item))}</h1><div class="detail-meta">${item.score?`<span class="meta rating">★ ${Number(item.score).toFixed(1)}</span>`:""}${item.year?`<span class="meta">${item.year}</span>`:""}${item.status?`<span class="meta">${esc(item.status)}</span>`:""}</div><div class="detail-actions"><button class="primary-btn" data-link="${esc(item.channel_link||"")}">▶ Watch now</button><button class="ghost-btn" id="favBtn">${isFav(item.id)?"♥":"♡"} My List</button></div></div></div><div class="detail-body"><div class="detail-content"><div>
+  ${(item.genres||"").split(",").filter(Boolean).length?`<div class="detail-genres">${item.genres.split(",").map(g=>`<span class="genre-tag">${esc(g.trim())}</span>`).join("")}</div>`:""}
+  ${item.synopsis?`<p class="synopsis">${esc(item.synopsis)}</p>`:""}<p class="section-label">Episodes & Seasons</p><div id="seasonArea"><div class="loader"><span></span></div></div>
+  <p class="section-label">Quality & Downloads</p><div class="quality-grid">${detailQuality(item)}</div></div>
+  <aside><p class="section-label">Source Channels</p>${channelButtons(item)}<p class="section-label">Information</p><div class="info-box"><div class="info-line"><b>Studio</b>${esc(item.studio||"—")}</div><div class="info-line"><b>Year</b>${esc(item.year||"—")}</div><div class="info-line"><b>Episodes</b>${esc(item.episode_count||item.episodes||"—")}</div></div></aside></div></div>`;
+  $("#detailClose").onclick=closeDetail;
+  $("#favBtn").onclick=()=>{toggleFav(item.id);$("#favBtn").innerHTML=`${isFav(item.id)?"♥":"♡"} My List`};
+  $$(".detail [data-link]").forEach(e=>e.onclick=()=>openLink(e.dataset.link));
+  try{
+    const full=await api("/api/entry/"+item.id);
+    fetch("/api/entry/"+item.id+"/view",{method:"POST"}).catch(()=>{});
+    $("#seasonArea").innerHTML=seasonBlock(full.seasons||[]);
+    $$(".detail [data-link]").forEach(e=>e.onclick=()=>openLink(e.dataset.link));
+  }catch(e){$("#seasonArea").innerHTML=seasonBlock(item.seasons||[])}
+}
+function closeDetail(){$("#detail").hidden=true;$("#detail").innerHTML="";document.body.style.overflow=""}
+
+async function openChannels(){
+  try{const d=await api("/api/channels");state.channels=d.items||[]}catch(e){return toast("Could not load channels")}
+  const s=$("#sheet");s.hidden=false;
+  s.innerHTML=`<div class="sheet-card"><div class="sheet-handle"></div><h3>Indexed Channels</h3>${state.channels.length?state.channels.map(c=>`<div class="sheet-row"><div><div class="name">${esc(c.title)}</div><div class="count">${c.post_count||0} posts${c.kind==="index"?" · index":""}</div></div><a href="#" data-link="${esc(c.link)}">Open ›</a></div>`).join(""):`<p class="synopsis">No channels indexed yet.</p>`}</div>`;
+  $$("#sheet [data-link]").forEach(a=>a.onclick=e=>{e.preventDefault();openLink(a.dataset.link)});
+  s.onclick=e=>{if(e.target===s)s.hidden=true};
+}
+
+function nav(where){
+  $$(".nav-item,.mobile-nav button").forEach(x=>x.classList.toggle("active",x.dataset.nav===where));
+  if(where==="home")window.scrollTo({top:0,behavior:"smooth"});
+  if(where==="popular")$("#popularBlock").scrollIntoView({behavior:"smooth"});
+  if(where==="ongoing")$("#ongoingBlock").scrollIntoView({behavior:"smooth"});
+  if(where==="catalog")$("#catalogSection").scrollIntoView({behavior:"smooth"});
+  if(where==="favorites"){
+    const fav=state.items.filter(x=>isFav(x.id));
+    state.items=fav;renderGrid();$("#catalogSection").scrollIntoView({behavior:"smooth"});
+    if(!fav.length)toast("Your My List is empty");
   }
+  $("#sidebar").classList.remove("open");$("#sidebarShade").classList.remove("open");
+}
 
-  const $ = (s) => document.querySelector(s);
-  const $$ = (s) => [...document.querySelectorAll(s)];
-  const state = {
-    catalog: [],
-    home: [],
-    genres: [],
-    channels: [],
-    view: "home",
-    query: "",
-    genre: null
-  };
+$("#menuBtn")?.addEventListener("click",()=>{$("#sidebar").classList.add("open");$("#sidebarShade").classList.add("open")});
+$("#closeSidebar")?.addEventListener("click",()=>nav("home"));
+$("#sidebarShade").onclick=()=>nav("home");
+$("#channelsBtn").onclick=openChannels;
+$("#searchFocus").onclick=()=>{$("#searchInput").focus();window.scrollTo({top:0,behavior:"smooth"})};
+$("#clearBtn").onclick=()=>{$("#searchInput").value="";state.q="";$("#clearBtn").hidden=true;load()};
+$("#searchInput").oninput=e=>{state.q=e.target.value.trim();$("#clearBtn").hidden=!state.q;clearTimeout(window._search);window._search=setTimeout(load,300)};
+$("#sortSelect").onchange=e=>{state.sort=e.target.value;load()};
+$("#filterBtn").onclick=()=>{$("#genreBar").scrollIntoView({behavior:"smooth",block:"center"});toast("Choose a genre above")};
+$$("[data-nav]").forEach(e=>e.onclick=()=>nav(e.dataset.nav));
+document.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){e.preventDefault();$("#searchInput").focus()}if(e.key==="Escape")closeDetail()});
+$("#themeBtn").onclick=()=>{document.body.classList.toggle("light");toast("Theme preference saved")};
 
-  const api = async (url) => {
-    const r = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
-  };
-
-  const esc = (v = "") => String(v).replace(/[&<>"']/g, c =>
-    ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
-
-  const img = (item, cls = "") => {
-    const title = item?.title || item?.raw_name || "?";
-    if (!item?.poster_url) return `<div class="poster-fallback ${cls}">${esc(title[0]?.toUpperCase() || "?")}</div>`;
-    return `<img class="${cls}" loading="lazy" src="${esc(item.poster_url)}" alt="" onerror="this.outerHTML='<div class=&quot;poster-fallback ${cls}&quot;>${esc(title[0]?.toUpperCase() || "?")}</div>'">`;
-  };
-
-  const openLink = (url) => {
-    if (!url) return;
-    try {
-      if (tg?.openTelegramLink && /^https?:\/\/(t\.me|telegram\.me)\//.test(url)) tg.openTelegramLink(url);
-      else if (tg?.openLink) tg.openLink(url);
-      else window.open(url, "_blank");
-    } catch (_) { window.open(url, "_blank"); }
-  };
-
-  const toast = (message) => {
-    const el = $("#toast");
-    el.textContent = message;
-    el.classList.add("show");
-    clearTimeout(el._timer);
-    el._timer = setTimeout(() => el.classList.remove("show"), 2200);
-  };
-
-  const score = (x) => Number(x?.score || 0);
-  const title = (x) => x?.title || x?.raw_name || "Unknown";
-  const isOngoing = (x) => {
-    const s = String(x?.status || "").toLowerCase();
-    return s.includes("airing") || s.includes("ongoing") || s.includes("currently");
-  };
-
-  function card(item, compact = false) {
-    const t = title(item);
-    const meta = [
-      item.year,
-      item.episodes ? `${item.episodes} EP` : null,
-      score(item) ? `★ ${score(item).toFixed(1)}` : null
-    ].filter(Boolean).join(" · ");
-    const channels = Number(item.channel_count || 0);
-    return `
-      <article class="anime-card ${compact ? "compact" : ""}" data-id="${item.id}">
-        <div class="poster-wrap">
-          ${img(item)}
-          ${item.episodes ? `<span class="ep-badge">${esc(item.episodes)} EP</span>` : ""}
-          ${score(item) ? `<span class="score-badge">★ ${score(item).toFixed(1)}</span>` : ""}
-        </div>
-        <div class="card-copy">
-          <h3>${esc(t)}</h3>
-          <p>${esc(meta || (channels ? `${channels} channel${channels > 1 ? "s" : ""}` : "Anime"))}</p>
-        </div>
-      </article>`;
-  }
-
-  function renderHero(item) {
-    const el = $("#hero");
-    if (!item) {
-      el.innerHTML = `<div class="hero-empty"><span>INDEX</span><h1>Your anime library starts here.</h1><p>Add or refresh your Telegram index channel to populate the library.</p></div>`;
-      return;
-    }
-    const t = title(item);
-    const bg = item.banner_url || item.poster_url || "";
-    el.innerHTML = `
-      <div class="hero-bg" style="background-image:url('${esc(bg)}')"></div>
-      <div class="hero-overlay"></div>
-      <div class="hero-content">
-        <span class="hero-label">FEATURED ANIME</span>
-        <h1>${esc(t)}</h1>
-        <div class="hero-meta">
-          ${score(item) ? `<b>★ ${score(item).toFixed(1)}</b>` : ""}
-          ${item.year ? `<span>${item.year}</span>` : ""}
-          ${item.episodes ? `<span>${item.episodes} episodes</span>` : ""}
-          ${item.status ? `<span>${esc(item.status)}</span>` : ""}
-        </div>
-        <p>${esc(item.synopsis || "Explore this title in your indexed Telegram library.")}</p>
-        <button class="primary-btn" data-id="${item.id}">View Anime <b>→</b></button>
-      </div>`;
-    el.querySelector(".primary-btn")?.addEventListener("click", () => openDetail(item.id));
-  }
-
-  function renderRail(id, items) {
-    const el = $(`#${id}`);
-    el.innerHTML = items.length ? items.map(x => card(x, true)).join("") :
-      `<div class="rail-empty">No titles available yet.</div>`;
-    el.querySelectorAll(".anime-card").forEach(c => c.addEventListener("click", () => openDetail(c.dataset.id)));
-  }
-
-  function renderGenres() {
-    const el = $("#genreGrid");
-    const list = state.genres.slice(0, 18);
-    el.innerHTML = list.length ? list.map(g => `
-      <button class="genre-card" data-genre="${esc(g.name)}">
-        <span>${esc(g.name)}</span><small>${g.count || 0} titles</small>
-      </button>`).join("") : `<div class="rail-empty">Genres appear after metadata is indexed.</div>`;
-    el.querySelectorAll("[data-genre]").forEach(b => b.addEventListener("click", () => {
-      state.genre = b.dataset.genre;
-      showView("catalog");
-      loadCatalog();
-    }));
-  }
-
-  function renderHome() {
-    const popular = [...state.catalog].sort((a,b) => score(b)-score(a) || title(a).localeCompare(title(b)));
-    const ongoing = state.catalog.filter(isOngoing).sort((a,b) => score(b)-score(a));
-    const latest = [...state.home].sort((a,b) =>
-      new Date(b.latest_post?.posted_at || 0) - new Date(a.latest_post?.posted_at || 0));
-
-    renderHero(popular[0] || state.catalog[0]);
-    renderRail("popularRail", popular.slice(0, 12));
-    renderRail("ongoingRail", ongoing.slice(0, 12));
-    renderRail("latestRail", latest.slice(0, 12));
-    renderGenres();
-
-    $("#ongoingSection").style.display = ongoing.length ? "" : "none";
-  }
-
-  function showView(view) {
-    state.view = view;
-    $$(".view").forEach(v => v.classList.remove("active"));
-    const target = view === "home" ? "#homeView" :
-      view === "catalog" ? "#catalogView" :
-      view === "channels" ? "#channelView" : "#listView";
-    $(target).classList.add("active");
-
-    $$(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.view === view));
-    window.scrollTo({ top: 0, behavior: "smooth" });
-
-    if (view === "popular") renderList(
-      "Most Popular", "DISCOVER", "Top-rated anime in your indexed library.",
-      [...state.catalog].sort((a,b) => score(b)-score(a))
-    );
-    if (view === "ongoing") renderList(
-      "Ongoing Anime", "UPDATING", "Titles currently marked as airing/ongoing.",
-      state.catalog.filter(isOngoing).sort((a,b) => score(b)-score(a))
-    );
-    if (view === "channels") renderChannels();
-  }
-
-  function renderList(head, eyebrow, desc, items) {
-    $("#listTitle").textContent = head;
-    $("#listEyebrow").textContent = eyebrow;
-    $("#listDescription").textContent = desc;
-    $("#listGrid").innerHTML = items.length ? items.map(x => card(x)).join("") :
-      `<div class="empty-state"><h2>No anime here yet</h2><p>Once your bot indexes more data, this section will populate automatically.</p></div>`;
-    $("#listGrid").querySelectorAll(".anime-card").forEach(c => c.addEventListener("click", () => openDetail(c.dataset.id)));
-  }
-
-  function renderFilters() {
-    const el = $("#catalogFilters");
-    el.innerHTML = `
-      <button class="filter ${!state.genre ? "active" : ""}" data-clear>All</button>
-      ${state.genres.slice(0, 12).map(g => `<button class="filter ${state.genre === g.name ? "active":""}" data-filter="${esc(g.name)}">${esc(g.name)}</button>`).join("")}
-    `;
-    el.querySelector("[data-clear]")?.addEventListener("click", () => { state.genre = null; renderFilters(); loadCatalog(); });
-    el.querySelectorAll("[data-filter]").forEach(b => b.addEventListener("click", () => {
-      state.genre = b.dataset.filter; renderFilters(); loadCatalog();
-    }));
-  }
-
-  async function loadCatalog() {
-    $("#catalogLoader").classList.add("show");
-    const params = new URLSearchParams();
-    if (state.query) params.set("q", state.query);
-    if (state.genre) params.set("genre", state.genre);
-    try {
-      const data = await api("/api/catalog?" + params);
-      const items = data.items || [];
-      $("#catalogGrid").innerHTML = items.length ? items.map(x => card(x)).join("") :
-        `<div class="empty-state"><h2>No matches</h2><p>Try another title or genre.</p></div>`;
-      $("#catalogGrid").querySelectorAll(".anime-card").forEach(c => c.addEventListener("click", () => openDetail(c.dataset.id)));
-    } catch (_) {
-      toast("Could not load the catalog");
-    } finally {
-      $("#catalogLoader").classList.remove("show");
-    }
-  }
-
-  function renderChannels() {
-    const el = $("#channelGrid");
-    el.innerHTML = state.channels.length ? state.channels.map(c => `
-      <article class="channel-card">
-        <div class="channel-icon">◫</div>
-        <div><h3>${esc(c.title)}</h3><p>${c.post_count || 0} posts${c.kind ? ` · ${esc(c.kind)}` : ""}</p></div>
-        <button data-link="${esc(c.link)}">Open →</button>
-      </article>`).join("") :
-      `<div class="empty-state"><h2>No channels indexed</h2><p>Add the bot to a Telegram channel and refresh the index.</p></div>`;
-    el.querySelectorAll("[data-link]").forEach(b => b.addEventListener("click", () => openLink(b.dataset.link)));
-  }
-
-  async function openDetail(id) {
-    const modal = $("#detail");
-    modal.hidden = false;
-    modal.innerHTML = `<div class="detail-loading"><span></span></div>`;
-    document.body.classList.add("locked");
-
-    let item;
-    try { item = await api("/api/entry/" + encodeURIComponent(id)); }
-    catch (_) {
-      item = state.catalog.find(x => String(x.id) === String(id));
-    }
-    if (!item) { modal.hidden = true; document.body.classList.remove("locked"); return; }
-
-    const genres = String(item.genres || "").split(",").map(x => x.trim()).filter(Boolean);
-    const channels = item.channels?.length ? item.channels :
-      (item.channel_link ? [{source:"", url:item.channel_link, kind:item.channel_kind}] : []);
-    const qualities = item.qualities || [];
-
-    modal.innerHTML = `
-      <div class="detail-backdrop" style="background-image:url('${esc(item.banner_url || item.poster_url || "")}')"></div>
-      <div class="detail-panel">
-        <button class="detail-close" id="detailClose">×</button>
-        <div class="detail-top">
-          <div class="detail-poster">${img(item)}</div>
-          <div class="detail-heading">
-            <span class="eyebrow">ANIME DETAILS</span>
-            <h1>${esc(title(item))}</h1>
-            <div class="detail-meta">
-              ${score(item) ? `<span>★ ${score(item).toFixed(1)}</span>` : ""}
-              ${item.year ? `<span>${item.year}</span>` : ""}
-              ${item.episodes ? `<span>${item.episodes} EP</span>` : ""}
-              ${item.status ? `<span>${esc(item.status)}</span>` : ""}
-            </div>
-          </div>
-        </div>
-        ${genres.length ? `<div class="detail-tags">${genres.map(g => `<span>${esc(g)}</span>`).join("")}</div>` : ""}
-        ${item.synopsis ? `<p class="detail-synopsis">${esc(item.synopsis)}</p>` : ""}
-        ${item.note ? `<div class="detail-note">${esc(item.note)}</div>` : ""}
-
-        <h3 class="detail-section-title">Available Sources</h3>
-        <div class="source-list">
-          ${channels.length ? channels.map(ch => `
-            <button class="source-btn" data-link="${esc(ch.url)}">
-              <span>◫</span><div><b>${esc(ch.source || "Telegram Source")}</b><small>${esc(ch.kind || "Open source")}</small></div><i>→</i>
-            </button>`).join("") : `<p class="muted">No source link has been attached yet.</p>`}
-        </div>
-
-        ${qualities.length ? `
-          <h3 class="detail-section-title">Quality / Downloads</h3>
-          <div class="quality-list">
-            ${qualities.map(q => `<button class="quality-btn" data-link="${esc(q.url)}"><b>${esc((q.quality || "LINK").toUpperCase())}</b><small>${q.batch ? "Batch" : q.via_bot ? "File Bot" : "Download"}</small></button>`).join("")}
-          </div>` : ""}
-      </div>`;
-
-    $("#detailClose").addEventListener("click", closeDetail);
-    modal.querySelectorAll("[data-link]").forEach(b => b.addEventListener("click", () => openLink(b.dataset.link)));
-    modal.addEventListener("click", e => { if (e.target === modal) closeDetail(); }, { once: true });
-  }
-
-  function closeDetail() {
-    $("#detail").hidden = true;
-    $("#detail").innerHTML = "";
-    document.body.classList.remove("locked");
-  }
-
-  async function boot() {
-    try {
-      const [catalog, home, genres, channels] = await Promise.all([
-        api("/api/catalog?limit=500"),
-        api("/api/home?limit=500"),
-        api("/api/genres"),
-        api("/api/channels")
-      ]);
-      state.catalog = catalog.items || [];
-      state.home = home.items || [];
-      state.genres = genres.items || [];
-      state.channels = channels.items || [];
-      renderHome();
-      renderFilters();
-    } catch (_) {
-      toast("Index could not load the library");
-    }
-  }
-
-  $$(".nav-item,[data-view]").forEach(el => el.addEventListener("click", e => {
-    const v = el.dataset.view;
-    if (!v) return;
-    e.preventDefault();
-    showView(v);
-  }));
-
-  $("#channelsBtn").addEventListener("click", () => showView("channels"));
-
-  let searchTimer;
-  $("#searchInput").addEventListener("input", e => {
-    state.query = e.target.value.trim();
-    $("#clearSearch").hidden = !state.query;
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(async () => {
-      if (!state.query) { $("#searchResults").hidden = true; return; }
-      try {
-        const data = await api("/api/catalog?q=" + encodeURIComponent(state.query) + "&limit=12");
-        const items = data.items || [];
-        const box = $("#searchResults");
-        box.hidden = false;
-        box.innerHTML = items.length ? items.map(x => `<button data-id="${x.id}">${img(x,"search-poster")}<span><b>${esc(title(x))}</b><small>${esc(x.year || "")}${x.score ? ` · ★ ${score(x).toFixed(1)}` : ""}</small></span></button>`).join("") : `<p>No anime found.</p>`;
-        box.querySelectorAll("[data-id]").forEach(b => b.addEventListener("click", () => { box.hidden = true; openDetail(b.dataset.id); }));
-      } catch (_) {}
-    }, 250);
-  });
-
-  $("#clearSearch").addEventListener("click", () => {
-    $("#searchInput").value = ""; state.query = ""; $("#clearSearch").hidden = true; $("#searchResults").hidden = true;
-  });
-
-  document.addEventListener("keydown", e => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); $("#searchInput").focus(); }
-    if (e.key === "Escape") { $("#searchResults").hidden = true; if (!$("#detail").hidden) closeDetail(); }
-  });
-
-  boot();
+(async()=>{
+  updateFavCount();
+  try{const g=await api("/api/genres");state.genres=(g.items||[]).slice(0,20)}catch(e){}
+  renderGenres();renderLetters();
+  await Promise.all([loadSections(),load()]);
+})();
 })();
