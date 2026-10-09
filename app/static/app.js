@@ -124,6 +124,7 @@ async function loadSections(){
 async function load(){
   $("#loader").hidden=false;
   const p=new URLSearchParams(); if(state.q)p.set("q",state.q);if(state.genre)p.set("genre",state.genre);p.set("sort",state.sort);
+  p.set("limit","500");
   try{
     const d=await api("/api/catalog?"+p);
     let items=d.items||[];
@@ -143,30 +144,82 @@ function channelButtons(full){
   if(!list.length)return `<p class="synopsis">No channel link recorded yet.</p>`;
   return list.map(c=>`<button class="channel-btn" data-link="${esc(c.url)}"><span class="ch-icon">◫</span><span class="ch-main"><span class="ch-title">${esc(c.source||"Source Channel")}</span><span class="ch-url">${esc(c.url||"")}</span></span><span class="ch-go">›</span></button>`).join("");
 }
-function seasonBlock(seasons){
-  if(!seasons?.length)return `<p class="section-label">Episodes</p><p class="synopsis">No seasons have been added yet.</p>`;
-  const s=seasons[0];
-  return `<p class="section-label">Season ${String(s.number).padStart(2,"0")} · Episodes</p>
-  <div class="info-box"><div class="info-line"><b>Audio</b>${esc(s.audio||"Japanese")}</div><div class="info-line"><b>Subtitles</b>${esc(s.subtitles||"English Sub")}</div></div>
-  <div class="episode-list" style="margin-top:10px">${(s.episodes||[]).map(ep=>`<button class="episode-row" data-link="${esc(ep.url)}"><span class="ep-index">${String(ep.number).padStart(2,"0")}</span><span class="ep-main"><span class="ep-title">${esc(ep.title||"Episode "+ep.number)}</span><span class="ep-sub">Tap to watch</span></span><span>▶</span></button>`).join("")||`<p class="synopsis">No episodes added yet.</p>`}</div>`;
+function seasonPosterStrip(seasons){
+  if(!seasons||seasons.length<2)return "";
+  return `<p class="section-label">Seasons</p><div class="season-strip">${seasons.map((s,i)=>`<button class="season-poster ${i===0?"active":""}" data-season="${esc(s.number)}"><div class="season-img">${img(s.poster_url,"S"+s.number)}</div><span class="season-tag">Season ${String(s.number).padStart(2,"0")}</span></button>`).join("")}</div>`;
+}
+function seasonDetails(s){
+  const q=(s.quality_tags&&s.quality_tags.length)?s.quality_tags:["480p","720p","1080p","HD-RIP"];
+  return `<div class="release-details"><span><b>Audio</b> ${esc(s.audio||"Japanese")}</span><span><b>Subtitles</b> ${esc(s.subtitles||"English Sub")}</span><span><b>Quality</b> ${q.map(x=>esc(String(x))).join(" · ")}</span></div>`;
+}
+function episodeList(s){
+  const eps=(s&&s.episodes)||[];
+  if(!eps.length)return `<p class="synopsis">No episodes added yet for this season. The owner adds them from the bot with the episode message.</p>`;
+  return `<div class="episode-list">${eps.map(ep=>`<button class="episode-row" data-link="${esc(ep.url)}"><span class="ep-index">${String(ep.number).padStart(2,"0")}</span><span class="ep-main"><span class="ep-title">${esc(ep.title||"Episode "+String(ep.number).padStart(2,"0"))}</span><span class="ep-sub">Tap to watch</span></span><span>▶</span></button>`).join("")}</div>`;
+}
+function recommendationsHtml(items){
+  if(!items||!items.length)return "";
+  return `<p class="section-label">Recommended</p><div class="rail rec-rail">${items.map(railCard).join("")}</div>`;
 }
 async function openDetail(item){
   if(!item)return;
   const d=$("#detail");d.hidden=false;document.body.style.overflow="hidden";
-  d.innerHTML=`<div class="detail-hero"><div class="hero-bg" style="background-image:url('${esc(item.banner_url||item.poster_url||"")}')"></div><button class="circle-btn detail-close" id="detailClose">×</button><div class="detail-body"><h1 class="detail-title">${esc(titleOf(item))}</h1><div class="detail-meta">${item.score?`<span class="meta rating">★ ${Number(item.score).toFixed(1)}</span>`:""}${item.year?`<span class="meta">${item.year}</span>`:""}${item.status?`<span class="meta">${esc(item.status)}</span>`:""}</div><div class="detail-actions"><button class="primary-btn" data-link="${esc(item.channel_link||"")}">▶ Watch now</button><button class="ghost-btn" id="favBtn">${isFav(item.id)?"♥":"♡"} My List</button></div></div></div><div class="detail-body"><div class="detail-content"><div>
-  ${(item.genres||"").split(",").filter(Boolean).length?`<div class="detail-genres">${item.genres.split(",").map(g=>`<span class="genre-tag">${esc(g.trim())}</span>`).join("")}</div>`:""}
-  ${item.synopsis?`<p class="synopsis">${esc(item.synopsis)}</p>`:""}<p class="section-label">Episodes & Seasons</p><div id="seasonArea"><div class="loader"><span></span></div></div>
-  <p class="section-label">Quality & Downloads</p><div class="quality-grid">${detailQuality(item)}</div></div>
-  <aside><p class="section-label">Source Channels</p>${channelButtons(item)}<p class="section-label">Information</p><div class="info-box"><div class="info-line"><b>Studio</b>${esc(item.studio||"—")}</div><div class="info-line"><b>Year</b>${esc(item.year||"—")}</div><div class="info-line"><b>Episodes</b>${esc(item.episode_count||item.episodes||"—")}</div></div></aside></div></div>`;
+  d.innerHTML=`<div class="detail-hero"><div class="hero-bg" style="background-image:url('${esc(item.banner_url||item.poster_url||"")}')"></div><div class="hero-shade"></div><button class="circle-btn detail-close" id="detailClose">×</button><div class="detail-body detail-hero-inner">${item.poster_url?`<div class="hero-poster"><img src="${esc(item.poster_url)}" alt="" loading="lazy"></div>`:""}<div class="hero-copy"><h1 class="detail-title">${esc(titleOf(item))}</h1><div class="detail-meta">${item.score?`<span class="meta rating">★ ${Number(item.score).toFixed(1)}</span>`:""}${item.year?`<span class="meta">${item.year}</span>`:""}${item.status?`<span class="meta">${esc(item.status)}</span>`:""}${item.episode_count?`<span class="meta">${esc(item.episode_count)} EP</span>`:""}</div><div class="detail-actions"><button class="primary-btn" data-link="${esc(item.channel_link||"")}">▶ Watch now</button><button class="ghost-btn" id="favBtn">${isFav(item.id)?"♥":"♡"} My List</button></div></div></div></div><div class="detail-body"><div id="detailMain"><div class="loader"><span></span></div></div></div>`;
   $("#detailClose").onclick=closeDetail;
   $("#favBtn").onclick=()=>{toggleFav(item.id);$("#favBtn").innerHTML=`${isFav(item.id)?"♥":"♡"} My List`};
   $$(".detail [data-link]").forEach(e=>e.onclick=()=>openLink(e.dataset.link));
-  try{
-    const full=await api("/api/entry/"+item.id);
-    fetch("/api/entry/"+item.id+"/view",{method:"POST"}).catch(()=>{});
-    $("#seasonArea").innerHTML=seasonBlock(full.seasons||[]);
-    $$(".detail [data-link]").forEach(e=>e.onclick=()=>openLink(e.dataset.link));
-  }catch(e){$("#seasonArea").innerHTML=seasonBlock(item.seasons||[])}
+
+  let full=item;
+  try{ full=await api("/api/entry/"+item.id); }catch(e){/* fall back to card data */}
+  fetch("/api/entry/"+item.id+"/view",{method:"POST"}).catch(()=>{});
+
+  const genres=(full.genres||"").split(",").map(g=>g.trim()).filter(Boolean);
+  const seasons=(full.seasons&&full.seasons.length)?full.seasons:[{number:1,episodes:[],audio:full.audio,subtitles:full.subtitles,quality_tags:full.quality_tags,poster_url:full.poster_url}];
+  const watch=(full.channels&&full.channels[0]&&full.channels[0].url)||full.channel_link||"";
+
+  $("#detailMain").innerHTML=`
+  <div class="detail-content"><div>
+    ${genres.length?`<div class="detail-genres">${genres.map(g=>`<span class="genre-tag">${esc(g)}</span>`).join("")}</div>`:""}
+    <p class="section-label">Information</p>
+    <div class="info-box"><div class="info-line"><b>Studio</b>${esc(full.studio||"—")}</div><div class="info-line"><b>Year</b>${esc(full.year||"—")}</div><div class="info-line"><b>Episodes</b>${esc(full.episode_count||full.episodes||"—")}</div></div>
+    ${full.synopsis?`<p class="section-label">Description</p><p class="synopsis detail-desc" id="descBox">${esc(full.synopsis)}</p><button class="desc-toggle" id="descToggle" hidden>Read more</button>`:""}
+    ${seasonPosterStrip(seasons)}
+    <div id="seasonView"></div>
+    <p class="section-label">Quality & Downloads</p><div class="quality-grid">${detailQuality(full)}</div>
+  </div>
+  <aside>
+    <p class="section-label">Source Channels</p>${channelButtons(full)}
+  </aside></div>
+  <div id="recArea">${recommendationsHtml(full.recommendations)}</div>`;
+  $(".primary-btn[data-link]",$("#detailMain")).onclick=()=>openLink(watch)||0;
+
+  const desc=$("#descBox");
+  if(desc){
+    const toggle=$("#descToggle");
+    // -webkit-line-clamp can report scrollHeight == clientHeight, so also use
+    // the text length as a fallback signal for "there is more to show".
+    const long=(full.synopsis||"").length>240 || desc.scrollHeight>desc.clientHeight+2;
+    toggle.hidden=!long;
+    toggle.onclick=()=>{
+      const open=desc.classList.toggle("expanded");
+      toggle.textContent=open?"Show less":"Read more";
+    };
+  }
+
+  const seasonView=$("#seasonView");
+  const renderSeason=(number)=>{
+    const s=seasons.find(x=>String(x.number)===String(number))||seasons[0];
+    seasonView.innerHTML=`<p class="section-label">Season ${String(s.number).padStart(2,"0")} · Episodes</p>${seasonDetails(s)}${episodeList(s)}`;
+    $$("#seasonView [data-link]").forEach(e=>e.onclick=()=>openLink(e.dataset.link));
+    $$(".season-poster").forEach(e=>e.classList.toggle("active",String(e.dataset.season)===String(s.number)));
+  };
+  renderSeason(seasons[0].number);
+
+  $$(".season-poster").forEach(e=>e.onclick=()=>renderSeason(e.dataset.season));
+  $$("#recArea .rec-rail .rail-card").forEach(e=>e.onclick=()=>{
+    const rec=(full.recommendations||[]).find(r=>String(r.id)===e.dataset.id);
+    if(rec){closeDetail();setTimeout(()=>openDetail(rec),60)}
+  });
 }
 function closeDetail(){$("#detail").hidden=true;$("#detail").innerHTML="";document.body.style.overflow=""}
 
