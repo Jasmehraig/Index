@@ -46,6 +46,21 @@ inside the Agent Canvas environment.
   when an upstream API is down (return `None`/`[]`, never raise into a webhook).
 - The Telegram webhook must always return `{"ok": true}`; wrap handlers in
   try/except and log instead of propagating.
+- Telegram retries an update when the webhook does not answer within ~30s, and
+  Heroku kills the request there (`H12` → 503). Anything a command does over the
+  network (`/catalog`, `/refresh`) must therefore run as a detached background
+  task (`catalog.spawn`) and report its own result; the request handler returns
+  immediately. Never block the event loop with `time.sleep` in a request path —
+  use `asyncio.sleep` (see `telegram_web.fetch_channel`).
+- Do not `await` a Telegram send in a webhook handler either: `sendMessage` can
+  take seconds, which eats the same 30s budget. Use `webhook.notify_later`, which
+  fires the send as a background task.
+- Telegram re-delivers an update whose response was slow, so the same `/catalog`
+  can arrive several times. `_catalog_running` collapses them: only the first
+  starts a scrape, the rest get "Already reading�". Never start a second scrape
+  for a channel that already has one in flight.
+- A single `uvicorn` worker serves both the Telegram webhook and the Mini App
+  API, so anything that stalls the event loop stalls the app.
 
 ## Gotchas
 
