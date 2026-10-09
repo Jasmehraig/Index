@@ -189,3 +189,32 @@ AniList fixture `tests/anilist_frieren.json`. Keep tests on real code paths.
   Telegram tags every typed URL as a `url` entity.
 - `Settings.index_channel_usernames` keeps the channel's original casing: the
   `t.me/s` preview tags posts `data-post="Name/123"` and paging stops otherwise.
+
+## Access control (owner-only commands)
+
+The bot is private. Only the owner, listed admins, and channel owners may run
+commands; everyone else can only open the Mini App and read `/help`.
+
+- `Settings.owner_user_ids` (`OWNER_USER_IDS`) lists the bot owner's Telegram
+  ids. The code cannot tell a bot's creator, so set this env var by hand; it is
+  the "Owner add it" step.
+- `_is_admin` returns true for `ADMIN_USER_IDS`, `OWNER_USER_IDS`, or any
+  `Channel.owner_user_id` (whoever added the bot).
+- `_handle_message` gates every command except `/start` and `/help` behind
+  `_is_admin`, including in private chats - Telegram lets any user DM a bot, so
+  the private chat is not a trust boundary. Plain-text ongoing/episode input is
+  only handled in private chats; group text is ignored.
+- Tests: `test_start_and_help_are_public`, `test_public_user_cannot_run_commands`,
+  `test_owner_and_admin_can_run_commands`, `test_group_plain_text_is_ignored`.
+
+## Mini App detail page
+
+- `/api/catalog` defaults to `limit=120`; the Mini App asks for the max (500) so
+  the grid and letter filter show the whole catalog.
+- The detail page (`static/app.js` `openDetail`) renders the seasons, episodes
+  and recommendations `/api/entry/{id}` already returns. Layout: poster banner,
+  then a two-column block (left: genres, Information, expandable Description,
+  seasons, quality; right: source channels), then the Recommended rail below.
+- `.detail-hero` uses `min-height:clamp(300px,42vh,420px)` with a poster + copy
+  flex row; keep the poster `flex-basis` overrides in the `max-width:900px` and
+  `max-width:520px` blocks so the banner does not leave dead space on mobile.
