@@ -230,7 +230,14 @@ async def _handle_message(message: dict) -> None:
     text = (message.get("text") or "").strip()
     chat_id = message["chat"]["id"]
     user_id = message.get("from", {}).get("id")
+    is_private = (message.get("chat") or {}).get("type") == "private"
+
     if not text.startswith("/"):
+        # Plain messages are only handled in a one-to-one chat: an "ongoing
+        # anime" list or an episode message. Anything else (or any group text)
+        # is ignored so the bot stays quiet in public chats.
+        if not is_private:
+            return
         # A plain "ongoing anime" list replaces the Ongoing rail without a command.
         if ongoing_parser.looks_like_ongoing_message(text):
             await _send_ongoing(chat_id, text, user_id, message.get("entities") or [])
@@ -241,32 +248,50 @@ async def _handle_message(message: dict) -> None:
         return
 
     command = text.split()[0].split("@")[0].lower()
+    # Public commands: anyone may open the Mini App or read the bot help.
     if command in ("/start", "/app", "/index"):
         await _send_start(chat_id)
-    elif command == "/help":
+        return
+    if command == "/help":
         await _send_help(chat_id)
-    elif command == "/channels":
+        return
+
+    # Everything else is owner/admin only. This gate covers the private chat
+    # too, because Telegram lets any user DM a bot.
+    db = session_scope()
+    try:
+        allowed = _is_admin(db, user_id)
+    finally:
+        db.close()
+    if not allowed:
+        log.info("Blocked command %r from user %s", command, user_id)
+        await _notify(chat_id, "🔒 This bot is private. You can open the Mini App with /start.")
+        return
+
+    if command == "/channels":
         await _send_channels(chat_id)
     elif command in ("/refresh", "/rescan"):
-        await _send_refresh(chat_id, message.get("from", {}).get("id"))
+        await _send_refresh(chat_id, user_id)
     elif command == "/rss":
-        await _send_set_rss(chat_id, text, message.get("from", {}).get("id"))
+        await _send_set_rss(chat_id, text, user_id)
     elif command in ("/indexchannel", "/setindex"):
-        await _send_set_kind(chat_id, text, message.get("from", {}).get("id"), "index")
+        await _send_set_kind(chat_id, text, user_id, "index")
     elif command in ("/feed", "/setfeed"):
-        await _send_set_kind(chat_id, text, message.get("from", {}).get("id"), "feed")
+        await _send_set_kind(chat_id, text, user_id, "feed")
     elif command == "/import":
-        await _send_import(chat_id, text, message.get("from", {}).get("id"))
+        await _send_import(chat_id, text, user_id)
     elif command in ("/catalog", "/indexchannelimport"):
         await _send_catalog_import(chat_id, text)
     elif command == "/quality":
-        await _send_quality(chat_id, text, message.get("from", {}).get("id"))
+        await _send_quality(chat_id, text, user_id)
     elif command in ("/episodes", "/addepisodes"):
         await _send_episodes(chat_id, text, user_id)
     elif command in ("/ongoing", "/airing"):
         await _send_ongoing(chat_id, text, user_id, message.get("entities") or [])
     elif command == "/enrich":
         await _send_enrich(chat_id, user_id)
+    else:
+        await _notify(chat_id, "Unknown command. Send /help to see what I can do.")
 
 
 async def _send_episodes(chat_id: int, text: str, user_id: int | None) -> None:
@@ -609,6 +634,7 @@ async def _send_help(chat_id: int) -> None:
         "straight to the target.\n\n"
         "<b>Commands</b>\n"
         "/start – open the mini app\n"
+        "The commands below are for the owner and admins only:\n"
         "/channels – list indexed channels\n"
         "/refresh – re-scan feeds (owners/admins)\n"
         "/rss &lt;url&gt; – set a custom feed for your channel\n"
@@ -652,7 +678,7 @@ def _is_admin(db: Session, user_id: int | None) -> bool:
     if user_id is None:
         return False
     settings = get_settings()
-    if user_id in settings.admin_ids:
+    if user_id in settings.admin_ids or user_id in settings.owner_ids:
         return True
     return db.scalar(select(Channel).where(Channel.owner_user_id == user_id)) is not None
 
