@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # Comma-separated Telegram user ids allowed to run /refresh. Channel owners
     # (whoever added the bot) are always allowed.
     admin_user_ids: str = ""
+    # The bot owner's Telegram user id(s). Only these ids (plus ADMIN_USER_IDS
+    # and channel owners) may run commands; everyone else only gets /start and
+    # the Mini App.
+    owner_user_ids: str = ""
     # RSS bridge templates tried when discovering a channel feed. {username} and
     # {chat_id} are substituted. Public RSSHub instances are rate limited.
     rss_providers: str = (
@@ -85,6 +89,15 @@ class Settings(BaseSettings):
     def admin_ids(self) -> set[int]:
         ids: set[int] = set()
         for part in self.admin_user_ids.split(","):
+            part = part.strip()
+            if part.lstrip("-").isdigit():
+                ids.add(int(part))
+        return ids
+
+    @property
+    def owner_ids(self) -> set[int]:
+        ids: set[int] = set()
+        for part in self.owner_user_ids.split(","):
             part = part.strip()
             if part.lstrip("-").isdigit():
                 ids.add(int(part))
