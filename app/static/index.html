@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <meta name="theme-color" content="#08090d">
-  <title>Anime Index — Anime Swordsmith</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#090a0f">
+  <title>Index — Anime</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -12,105 +12,103 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <div class="ambient ambient-a"></div>
-  <div class="ambient ambient-b"></div>
+  <div class="ambient"></div>
 
-  <aside id="sidebar" class="sidebar">
-    <div class="side-brand">
-      <div class="logo">A</div>
-      <div><b>Anime</b><span>Index</span></div>
-      <button id="closeSidebar" class="circle-btn mobile-only">×</button>
-    </div>
+  <aside class="sidebar">
+    <a class="logo" href="#" data-view="home">
+      <span class="logo-mark">I</span>
+      <span><b>INDEX</b><small>ANIME LIBRARY</small></span>
+    </a>
 
     <nav class="side-nav">
-      <button class="nav-item active" data-nav="home"><span>⌂</span><b>Home</b></button>
-      <button class="nav-item" data-nav="popular"><span>◈</span><b>Most Popular</b></button>
-      <button class="nav-item" data-nav="ongoing"><span>◉</span><b>Ongoing</b></button>
-      <button class="nav-item" data-nav="catalog"><span>▦</span><b>Anime Catalog</b></button>
-      <button class="nav-item" data-nav="favorites"><span>♡</span><b>My List</b><i id="favCount">0</i></button>
-      <button class="nav-item" data-nav="channels"><span>◫</span><b>Channels</b></button>
+      <button class="nav-item active" data-view="home"><span>⌂</span> Home</button>
+      <button class="nav-item" data-view="popular"><span>★</span> Most Popular</button>
+      <button class="nav-item" data-view="ongoing"><span>◉</span> Ongoing</button>
+      <button class="nav-item" data-view="catalog"><span>▦</span> Anime Catalog</button>
+      <button class="nav-item" data-view="channels"><span>◫</span> Channels</button>
     </nav>
 
-    <div class="side-bottom">
-      <div class="side-card">
-        <span class="pulse"></span>
-        <div><b>Live index</b><small>Bot-synced catalog</small></div>
-      </div>
-      <button id="themeBtn" class="side-action">☾ <span>Appearance</span></button>
+    <div class="sidebar-bottom">
+      <div class="mini-status"><i></i><span>Telegram Library</span></div>
+      <span class="version">INDEX</span>
     </div>
   </aside>
 
-  <div id="sidebarShade" class="sidebar-shade"></div>
-
-  <div class="app-shell">
+  <main class="page">
     <header class="topbar">
-      <button id="menuBtn" class="circle-btn mobile-only">☰</button>
-      <div class="top-brand"><div class="logo small">A</div><span>Anime <b>Index</b></span></div>
-      <div class="top-actions">
-        <button id="searchFocus" class="top-search">⌕ <span>Search anime...</span><kbd>⌘ K</kbd></button>
-        <button id="channelsBtn" class="circle-btn">▦</button>
+      <button class="mobile-logo" data-view="home"><span class="logo-mark">I</span><b>INDEX</b></button>
+      <div class="top-search">
+        <span>⌕</span>
+        <input id="searchInput" type="search" placeholder="Search anime, genres, titles..." autocomplete="off">
+        <kbd>⌘ K</kbd>
+        <button id="clearSearch" hidden>×</button>
       </div>
+      <button id="channelsBtn" class="top-icon" aria-label="Channels">◫</button>
     </header>
 
-    <main>
-      <section class="announcement">
-        <span class="announce-dot"></span>
-        <strong>ANIME SWORDSMITH</strong>
-        <div class="marquee">
-          <div class="marquee-track">New episodes are indexed automatically • Follow the source channel for updates • Search titles, genres and years • New episodes are indexed automatically • Follow the source channel for updates •</div>
+    <div id="searchResults" class="search-results" hidden></div>
+
+    <section id="homeView" class="view active">
+      <div id="hero" class="hero"></div>
+
+      <section class="section" id="popularSection">
+        <div class="section-head">
+          <div><span class="eyebrow">DISCOVER</span><h2>Most Popular</h2></div>
+          <button class="see-all" data-view="popular">View all <b>→</b></button>
         </div>
-        <span class="announce-arrow">›</span>
-      </section>
-
-      <section id="hero" class="hero-pro" hidden></section>
-
-      <section class="quick-tools">
-        <div class="search-pro" id="searchBox">
-          <span>⌕</span>
-          <input id="searchInput" type="search" placeholder="Search anime, genre, studio..." autocomplete="off">
-          <button id="clearBtn" hidden>×</button>
-        </div>
-        <button id="filterBtn" class="filter-btn">☷ <span>Filters</span></button>
-      </section>
-
-      <div id="genreBar" class="chips"></div>
-
-      <section id="popularBlock" class="rail-section" hidden>
-        <div class="section-head"><div><span class="eyebrow">TRENDING NOW</span><h2>Most Popular</h2></div><button class="see-all" data-nav="popular">View all →</button></div>
         <div id="popularRail" class="rail"></div>
       </section>
 
-      <section id="ongoingBlock" class="rail-section" hidden>
-        <div class="section-head"><div><span class="eyebrow live">UPDATED LIVE</span><h2>Ongoing Anime</h2></div><button class="see-all" data-nav="ongoing">View all →</button></div>
+      <section class="section" id="ongoingSection">
+        <div class="section-head">
+          <div><span class="eyebrow">UPDATING</span><h2>Ongoing Anime</h2></div>
+          <button class="see-all" data-view="ongoing">View all <b>→</b></button>
+        </div>
         <div id="ongoingRail" class="rail"></div>
       </section>
 
-      <section id="catalogSection" class="catalog-section">
-        <div class="catalog-head">
-          <div><span class="eyebrow">LIBRARY</span><h2>Anime Catalog</h2><p id="resultCount">Loading...</p></div>
-          <div class="catalog-controls">
-            <div id="letterBar" class="letters"></div>
-            <select id="sortSelect"><option value="title">A — Z</option><option value="score">Highest rated</option><option value="year">Newest</option></select>
-          </div>
+      <section class="section">
+        <div class="section-head">
+          <div><span class="eyebrow">RECENT</span><h2>Latest Updates</h2></div>
         </div>
-        <div id="grid" class="grid"></div>
-        <div id="empty" class="empty" hidden><div class="empty-art">⌁</div><h2>Nothing found</h2><p>Try another title, genre or letter.</p></div>
-        <div id="loader" class="loader"><span></span></div>
+        <div id="latestRail" class="rail"></div>
       </section>
-    </main>
 
-    <nav class="mobile-nav">
-      <button class="active" data-nav="home"><span>⌂</span><small>Home</small></button>
-      <button data-nav="popular"><span>◈</span><small>Popular</small></button>
-      <button data-nav="ongoing"><span>◉</span><small>Ongoing</small></button>
-      <button data-nav="favorites"><span>♡</span><small>My List</small></button>
-      <button data-nav="catalog"><span>▦</span><small>Browse</small></button>
-    </nav>
-  </div>
+      <section class="section genres-section">
+        <div class="section-head"><div><span class="eyebrow">BROWSE</span><h2>Genres</h2></div></div>
+        <div id="genreGrid" class="genre-grid"></div>
+      </section>
+    </section>
 
-  <div id="detail" class="detail" hidden></div>
-  <div id="sheet" class="sheet" hidden></div>
+    <section id="catalogView" class="view">
+      <div class="page-title"><span class="eyebrow">LIBRARY</span><h1>Anime Catalog</h1><p>Browse every title indexed from your Telegram sources.</p></div>
+      <div id="catalogFilters" class="filters"></div>
+      <div id="catalogGrid" class="catalog-grid"></div>
+      <div id="catalogLoader" class="loader"><span></span></div>
+    </section>
+
+    <section id="listView" class="view">
+      <div class="page-title"><span id="listEyebrow" class="eyebrow">DISCOVER</span><h1 id="listTitle">Most Popular</h1><p id="listDescription">Top-rated anime in your indexed library.</p></div>
+      <div id="listGrid" class="catalog-grid"></div>
+    </section>
+
+    <section id="channelView" class="view">
+      <div class="page-title"><span class="eyebrow">SOURCES</span><h1>Channels</h1><p>Telegram sources currently connected to Index.</p></div>
+      <div id="channelGrid" class="channel-grid"></div>
+    </section>
+
+    <footer><span>INDEX</span><span>Anime discovery powered by your Telegram library</span></footer>
+  </main>
+
+  <div id="detail" class="modal" hidden></div>
   <div id="toast" class="toast"></div>
+
+  <nav class="mobile-nav">
+    <button class="nav-item active" data-view="home"><span>⌂</span><small>Home</small></button>
+    <button class="nav-item" data-view="popular"><span>★</span><small>Popular</small></button>
+    <button class="nav-item" data-view="ongoing"><span>◉</span><small>Ongoing</small></button>
+    <button class="nav-item" data-view="catalog"><span>▦</span><small>Catalog</small></button>
+  </nav>
 
   <script src="/static/app.js"></script>
 </body>
